@@ -59,6 +59,96 @@ def _pump_events():
     return True
 
 
+def rotate_ship_to(screen, clock, lay, state, messages, target_row, target_col,
+                   fps=30, grid_override=None):
+    """Blocking animation: smoothly rotate the Enterprise to face (target_row,
+    target_col) before firing. Modifies gui_main._ship_current_angle."""
+    import math
+    from gui_main import (
+        _ship_current_angle, _ship_target_angle,
+        _angle_diff, _ROTATION_SPEED,
+    )
+    import gui_main as _gm
+
+    ship_r, ship_c = state.sec_row, state.sec_col
+    dx = target_col - ship_c
+    dy = ship_r - target_row
+    desired = math.degrees(math.atan2(dy, dx))
+
+    # Override the target angle
+    _gm._ship_target_angle = desired
+
+    # Spin until we reach it (max 90 frames = 3s safety)
+    for _ in range(90):
+        diff = _angle_diff(_gm._ship_current_angle, desired)
+        if abs(diff) < _ROTATION_SPEED + 1:
+            _gm._ship_current_angle = desired % 360
+            break
+        _gm._ship_current_angle += _ROTATION_SPEED if diff > 0 else -_ROTATION_SPEED
+        _gm._ship_current_angle %= 360
+        _pump_events()
+        _redraw_scene(screen, state, messages, lay, grid_override)
+        pygame.display.flip()
+        clock.tick(fps)
+
+
+def play_ship_move(screen, clock, lay, state, messages,
+                   from_row, from_col, to_row, to_col, fps=30):
+    """Animate the Enterprise sliding smoothly from one sector cell to another.
+    The actual state has already been updated; we draw the ship at interpolated
+    pixel positions overlaid on the grid."""
+    import math
+    from gui_main import (
+        _draw_title_bar, _draw_grid, _draw_status_panel,
+        _draw_command_bar, _draw_message_log,
+        _ship_current_angle,
+    )
+    import gui_main as _gm
+
+    # Point ship in movement direction
+    dx = to_col - from_col
+    dy = from_row - to_row
+    if dx != 0 or dy != 0:
+        move_angle = math.degrees(math.atan2(dy, dx))
+        _gm._ship_current_angle = move_angle % 360
+        _gm._ship_target_angle = move_angle % 360
+
+    sx, sy = lay.cell_center(from_row, from_col)
+    ex, ey = lay.cell_center(to_row, to_col)
+    move_frames = 10
+
+    for i in range(move_frames):
+        _pump_events()
+        t = (i + 1) / move_frames
+        # Ease-in-out
+        t = t * t * (3 - 2 * t)
+        px = int(sx + (ex - sx) * t)
+        py = int(sy + (ey - sy) * t)
+
+        # Redraw scene (ship is already at to_row,to_col in state,
+        # so we draw grid but override the ship position visually)
+        screen.fill(COLORS["black"])
+        _draw_title_bar(screen, state, lay)
+        # Draw grid without the ship (we'll draw it at interpolated pos)
+        _draw_grid(screen, state.quadrant_grid, lay, hide_ship=True)
+        _draw_status_panel(screen, state, lay)
+        _draw_command_bar(screen, lay)
+        _draw_message_log(screen, messages, lay)
+
+        # Draw ship at interpolated position
+        ent_rect = lay.entity_rect("ship", px, py)
+        spr = sprite("ship", ent_rect.width, ent_rect.height,
+                      angle=_gm._ship_current_angle)
+        if spr is not None:
+            spr_rect = spr.get_rect(center=(px, py))
+            screen.blit(spr, spr_rect)
+        else:
+            pygame.draw.rect(screen, COLORS["bright_cyan"], ent_rect)
+
+        pygame.display.flip()
+        clock.tick(fps)
+
+
 def play_explosion(screen, clock, lay, state, messages, row, col, fps=30,
                    grid_override=None):
     """Play explosion animation at (row, col) — used for KlingonDestroyed."""

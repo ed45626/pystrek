@@ -52,6 +52,7 @@ from events import (
 from display import calc_direction_distance
 from gui_anim import (
     advance_tick, idle_frame,
+    rotate_ship_to, play_ship_move,
     play_explosion, play_phasor_hit, play_torpedo_track,
     play_klingon_fires, play_enterprise_hit,
 )
@@ -321,7 +322,7 @@ def _draw_combat_compass(surface, lay, ship_row, ship_col, klingon_positions):
                              (right_x, right_y)], 1)
 
 
-def _draw_grid(surface, grid, lay):
+def _draw_grid(surface, grid, lay, hide_ship=False):
     bg_rect = pygame.Rect(lay.grid_x, lay.grid_y, lay.grid, lay.grid)
     pygame.draw.rect(surface, COLORS["grid_bg"], bg_rect)
 
@@ -334,6 +335,11 @@ def _draw_grid(surface, grid, lay):
                          (lay.grid_x, y), (lay.grid_x + lay.grid, y))
 
     label_font = font(lay.font_entity)
+    # Find ship position for Klingon facing
+    ship_pos = grid.find(SHIP)
+    ship_r = ship_pos[0][0] if ship_pos else 4
+    ship_c = ship_pos[0][1] if ship_pos else 4
+
     for row in range(1, 9):
         for col in range(1, 9):
             token = grid.get(row, col)
@@ -341,13 +347,22 @@ def _draw_grid(surface, grid, lay):
             color = ENTITY_COLORS.get(key)
             if color is None:
                 continue
+            if hide_ship and key == "ship":
+                continue
             cx, cy = lay.cell_center(row, col)
             ent_rect = lay.entity_rect(key, cx, cy)
             # Idle animation: cycle frames for ship, stars, bases
             spr_key = star_sprite_key(row, col) if key == "star" else key
             frame = idle_frame(spr_key, cycle_speed=15) if key in ("ship", "star", "base") else 0
-            # Rotate Enterprise smoothly toward nearest threat
-            angle = _ship_current_angle if key == "ship" else 0.0
+            # Rotation: Enterprise toward threat, Klingons toward Enterprise
+            if key == "ship":
+                angle = _ship_current_angle
+            elif key == "klingon":
+                dx = ship_c - col
+                dy = row - ship_r  # row increases downward, flip for math
+                angle = math.degrees(math.atan2(dy, dx))
+            else:
+                angle = 0.0
             spr = sprite(spr_key, ent_rect.width, ent_rect.height,
                          frame=frame, angle=angle)
             if spr is not None:
@@ -1004,18 +1019,13 @@ def _handle_grid_click(row, col, state, messages, screen, clock, lay,
             return "ok"
         course = result[0]
         dist = result[1]  # game_dist (Chebyshev sectors)
-        # Auto-calculate warp: sector distance / 8 (one quadrant = warp 1)
-        warp = min(dist / 8.0, 0.2) if dist <= 2 else 0.2
-        # Prompt for warp — pre-fill info in message
-        messages.append((f"COURSE {course:.2f} TO [{row},{col}]  — ENTER WARP FACTOR",
+        # In-sector: auto-warp (distance/8); no prompt needed
+        warp = dist / 8.0
+        messages.append((f"NAVIGATING TO [{row},{col}]  COURSE {course:.2f}  "
+                         f"WARP {warp:.2f}",
                          _C["bright_cyan"]))
-        warp = numeric_input(screen, clock,
-                             f"WARP FACTOR (0-8) — course {course:.2f}:",
-                             bounds=(0, 8), fps=FPS)
-        if warp is None:
-            return "ok"
-        events = execute_nav(state, NavCommand(course=course, warp=warp))
-        _render_events(events, messages)
+        events = _execute_nav_animated(state, course, warp, messages,
+                                       screen, clock, lay)
         if is_victory(events):
             return "victory"
         if is_fatal(events):
@@ -1047,18 +1057,17 @@ def _handle_grid_click(row, col, state, messages, screen, clock, lay,
             messages.append((f"STARBASE AT [{row},{col}]: "
                              f"DIRECTION={course:.2f}  DISTANCE={adist:.2f}",
                              _C["bright_cyan"]))
-        # Navigate to dock
+        # Navigate to dock — auto-warp for in-sector
         if result[0] is not None:
-            warp = numeric_input(screen, clock,
-                                 f"WARP TO STARBASE? (0-8) — course {course:.2f}:",
-                                 bounds=(0, 8), fps=FPS)
-            if warp is not None:
-                events = execute_nav(state, NavCommand(course=course, warp=warp))
-                _render_events(events, messages)
-                if is_victory(events):
-                    return "victory"
-                if is_fatal(events):
-                    return "destroyed"
+            warp = gdist / 8.0
+            messages.append((f"NAVIGATING TO STARBASE — WARP {warp:.2f}",
+                             _C["bright_cyan"]))
+            events = _execute_nav_animated(state, course, warp, messages,
+                                           screen, clock, lay)
+            if is_victory(events):
+                return "victory"
+            if is_fatal(events):
+                return "destroyed"
                 if _check_stranded(state, messages):
                     return "destroyed"
                 if _check_time_expired(state, messages):
@@ -1111,23 +1120,33 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
 
     # Collect torpedo track sectors for batch animation
     torpedo_sectors = []
-    in_phaser_seq = False  # True after PhaserFired, cleared on non-phaser event
+    in_phaser_seq = False
+    last_phaser_target = None  # track to avoid redundant rotations
+
+    def _rotate_to(tr, tc):
+        """Rotate Enterprise to face target if not already aimed there."""
+        nonlocal last_phaser_target
+        if (tr, tc) != last_phaser_target:
+            rotate_ship_to(screen, clock, lay, state, messages,
+                           tr, tc, fps=FPS, grid_override=go)
+            last_phaser_target = (tr, tc)
 
     for ev in events:
         if isinstance(ev, PhaserFired):
             in_phaser_seq = True
+            last_phaser_target = None
 
         elif isinstance(ev, KlingonNoDamage):
-            # Phaser beam fires but does no damage — still show the beam
             if in_phaser_seq:
+                _rotate_to(ev.sector[0], ev.sector[1])
                 play_phasor_hit(screen, clock, lay, state, messages,
                                 ship_row, ship_col,
                                 ev.sector[0], ev.sector[1], fps=FPS,
                                 grid_override=go)
 
         elif isinstance(ev, KlingonHit):
-            # Phaser beam hits — show beam
             if in_phaser_seq:
+                _rotate_to(ev.sector[0], ev.sector[1])
                 play_phasor_hit(screen, clock, lay, state, messages,
                                 ship_row, ship_col,
                                 ev.sector[0], ev.sector[1], fps=FPS,
@@ -1140,8 +1159,9 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
                                    torpedo_sectors, fps=FPS,
                                    grid_override=go)
                 torpedo_sectors = []
-            # If phasers killed it, fire beam first
+            # If phasers killed it, rotate + fire beam first
             if in_phaser_seq:
+                _rotate_to(ev.sector[0], ev.sector[1])
                 play_phasor_hit(screen, clock, lay, state, messages,
                                 ship_row, ship_col,
                                 ev.sector[0], ev.sector[1], fps=FPS,
@@ -1156,9 +1176,13 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
 
         elif isinstance(ev, TorpedoFired):
             in_phaser_seq = False
+            last_phaser_target = None
             torpedo_sectors = []
 
         elif isinstance(ev, TorpedoTracked):
+            # Rotate toward first track sector (torpedo direction)
+            if not torpedo_sectors:
+                _rotate_to(ev.sector[0], ev.sector[1])
             torpedo_sectors.append(ev.sector)
 
         elif isinstance(ev, (TorpedoMissed, TorpedoAbsorbedByStar,
@@ -1199,6 +1223,34 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
 
 
 # ---------------------------------------------------------------------------
+# Navigation animation
+# ---------------------------------------------------------------------------
+def _animate_nav_events(events, state, messages, screen, clock, lay):
+    """Animate ShipMoved events: rotate toward destination then slide."""
+    for ev in events:
+        if isinstance(ev, ShipMoved):
+            fr, fc = ev.from_sector
+            tr, tc = ev.to_sector
+            # Rotate toward destination
+            rotate_ship_to(screen, clock, lay, state, messages,
+                           tr, tc, fps=FPS)
+            # Smooth slide
+            play_ship_move(screen, clock, lay, state, messages,
+                           fr, fc, tr, tc, fps=FPS)
+
+
+def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
+    """Execute navigation with smooth animation. Returns event list."""
+    # Snapshot ship position before nav
+    old_row, old_col = state.sec_row, state.sec_col
+    events = execute_nav(state, NavCommand(course=course, warp=warp))
+    _render_events(events, messages)
+    # Animate movement
+    _animate_nav_events(events, state, messages, screen, clock, lay)
+    return events
+
+
+# ---------------------------------------------------------------------------
 # Command dispatch
 # ---------------------------------------------------------------------------
 def _do_command(cmd_index, state, messages, screen, clock, lay):
@@ -1215,8 +1267,8 @@ def _do_command(cmd_index, state, messages, screen, clock, lay):
         if result is None:
             return "ok"
         course, warp = result
-        events = execute_nav(state, NavCommand(course=course, warp=warp))
-        _render_events(events, messages)
+        events = _execute_nav_animated(state, course, warp, messages,
+                                       screen, clock, lay)
         if is_victory(events):
             return "victory"
         if is_fatal(events):
