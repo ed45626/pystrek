@@ -8,30 +8,33 @@ No external asset files are needed for Phase 1 (coloured rectangles only).
 import pygame
 
 # ---------------------------------------------------------------------------
-# Colour palette  (matches TUI ANSI styles from display.py)
+# Colour palette  (matches TUI ANSI styles from display.py — brightened)
 # ---------------------------------------------------------------------------
 COLORS = {
     "black":        (0,   0,   0),
-    "white":        (200, 200, 200),
+    "white":        (220, 220, 220),
     "bright_white": (255, 255, 255),
-    "red":          (200, 50,  50),
-    "bright_red":   (255, 80,  80),
-    "green":        (50,  200, 50),
-    "bright_green": (100, 255, 100),
-    "cyan":         (50,  200, 200),
-    "bright_cyan":  (100, 255, 255),
-    "yellow":       (200, 200, 50),
-    "bright_yellow":(255, 255, 100),
-    "magenta":      (180, 50,  180),
-    "bright_magenta":(255, 100, 255),
-    "grid_line":    (40,  60,  40),
-    "grid_bg":      (8,   12,  8),
-    "panel_bg":     (15,  15,  25),
-    "panel_border": (50,  50,  80),
-    "button_bg":    (40,  40,  60),
-    "button_hover": (60,  60,  90),
-    "button_text":  (200, 200, 200),
-    "msg_bg":       (10,  10,  15),
+    "red":          (220, 60,  60),
+    "bright_red":   (255, 100, 100),
+    "green":        (80,  220, 80),
+    "bright_green": (130, 255, 130),
+    "cyan":         (80,  220, 220),
+    "bright_cyan":  (130, 255, 255),
+    "yellow":       (220, 220, 60),
+    "bright_yellow":(255, 255, 120),
+    "magenta":      (200, 80,  200),
+    "bright_magenta":(255, 130, 255),
+    "grid_line":    (50,  80,  50),
+    "grid_bg":      (8,   14,  8),
+    "panel_bg":     (18,  18,  30),
+    "panel_border": (70,  70,  110),
+    "button_bg":    (45,  45,  70),
+    "button_hover": (70,  70,  110),
+    "button_text":  (220, 220, 220),
+    "msg_bg":       (12,  12,  18),
+    "dialog_bg":    (25,  25,  45),
+    "dialog_border":(100, 100, 160),
+    "highlight":    (80,  80,  140),
 }
 
 # Map entity token_keys to rectangle colours
@@ -55,19 +58,19 @@ CONDITION_COLORS = {
 STATUS_STYLES = {
     "stardate_warn": COLORS["bright_magenta"],
     "torpedoes_low": COLORS["bright_magenta"],
-    "torpedoes_ok":  COLORS["cyan"],
+    "torpedoes_ok":  COLORS["bright_cyan"],
     "energy_crit":   COLORS["bright_red"],
     "energy_low":    COLORS["bright_yellow"],
-    "energy_ok":     COLORS["green"],
+    "energy_ok":     COLORS["bright_green"],
     "shields_crit":  COLORS["bright_red"],
     "shields_low":   COLORS["bright_yellow"],
-    "shields_ok":    COLORS["green"],
+    "shields_ok":    COLORS["bright_green"],
     "klingons":      COLORS["bright_yellow"],
 }
 
 
 # ---------------------------------------------------------------------------
-# Font cache
+# Font cache  (bold=True for all fonts)
 # ---------------------------------------------------------------------------
 class FontCache:
     """Lazy-loading cache for pygame fonts at various sizes."""
@@ -79,7 +82,7 @@ class FontCache:
     def get(self, size: int) -> pygame.font.Font:
         if size not in self._cache:
             self._cache[size] = pygame.font.SysFont(
-                self._name or "monospace", size
+                self._name or "monospace", size, bold=True
             )
         return self._cache[size]
 
@@ -95,7 +98,7 @@ def init_fonts(font_name=None):
 
 
 def font(size: int = 16) -> pygame.font.Font:
-    """Get a cached font at the given pixel size."""
+    """Get a cached bold font at the given pixel size."""
     if _fonts is None:
         init_fonts()
     return _fonts.get(size)
