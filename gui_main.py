@@ -48,6 +48,11 @@ from events import (
     is_fatal, is_victory,
 )
 from display import calc_direction_distance
+from gui_anim import (
+    advance_tick, idle_frame,
+    play_explosion, play_phasor_hit, play_torpedo_track,
+    play_klingon_fires, play_enterprise_hit,
+)
 
 # ---------------------------------------------------------------------------
 # Reference layout (designed at 1800×1000, scales from there)
@@ -189,7 +194,9 @@ def _draw_grid(surface, grid, lay):
                 continue
             cx, cy = lay.cell_center(row, col)
             ent_rect = lay.entity_rect(key, cx, cy)
-            spr = sprite(key, ent_rect.width, ent_rect.height)
+            # Idle animation: cycle frames for ship, stars, bases
+            frame = idle_frame(key, cycle_speed=15) if key in ("ship", "star", "base") else 0
+            spr = sprite(key, ent_rect.width, ent_rect.height, frame=frame)
             if spr is not None:
                 surface.blit(spr, ent_rect)
             elif key == "star":
@@ -751,9 +758,75 @@ def _check_time_expired(state, messages):
 
 
 # ---------------------------------------------------------------------------
+# Combat animation integration
+# ---------------------------------------------------------------------------
+def _animate_combat_events(events, state, messages, screen, clock, lay):
+    """Play combat animations based on event types."""
+    ship_row, ship_col = state.sec_row, state.sec_col
+
+    # Collect torpedo track sectors for batch animation
+    torpedo_sectors = []
+    torpedo_playing = False
+
+    for ev in events:
+        if isinstance(ev, PhaserFired):
+            # Animate phasor beam to each klingon that gets hit after this
+            pass  # beam drawn per KlingonHit below
+
+        elif isinstance(ev, KlingonHit):
+            play_phasor_hit(screen, clock, lay, state, messages,
+                            ship_row, ship_col,
+                            ev.sector[0], ev.sector[1], fps=FPS)
+
+        elif isinstance(ev, KlingonDestroyed):
+            # Flush torpedo track if torpedo killed this klingon
+            if torpedo_sectors:
+                play_torpedo_track(screen, clock, lay, state, messages,
+                                   torpedo_sectors, fps=FPS)
+                torpedo_sectors = []
+                torpedo_playing = False
+            play_explosion(screen, clock, lay, state, messages,
+                           ev.sector[0], ev.sector[1], fps=FPS)
+
+        elif isinstance(ev, TorpedoFired):
+            torpedo_sectors = []
+            torpedo_playing = True
+
+        elif isinstance(ev, TorpedoTracked):
+            torpedo_sectors.append(ev.sector)
+
+        elif isinstance(ev, (TorpedoMissed, TorpedoAbsorbedByStar,
+                             StarbaseDestroyed)):
+            # Play accumulated torpedo track, then any terminal effect
+            if torpedo_sectors:
+                play_torpedo_track(screen, clock, lay, state, messages,
+                                   torpedo_sectors, fps=FPS)
+                torpedo_sectors = []
+            torpedo_playing = False
+            if isinstance(ev, StarbaseDestroyed):
+                play_explosion(screen, clock, lay, state, messages,
+                               ev.sector[0], ev.sector[1], fps=FPS)
+
+        elif isinstance(ev, KlingonFired):
+            play_klingon_fires(screen, clock, lay, state, messages,
+                               ev.from_sector[0], ev.from_sector[1],
+                               ship_row, ship_col, fps=FPS)
+            play_enterprise_hit(screen, clock, lay, state, messages, fps=FPS)
+
+        elif isinstance(ev, EnterpriseDestroyed):
+            play_explosion(screen, clock, lay, state, messages,
+                           ship_row, ship_col, fps=FPS)
+
+    # Flush any remaining torpedo sectors
+    if torpedo_sectors:
+        play_torpedo_track(screen, clock, lay, state, messages,
+                           torpedo_sectors, fps=FPS)
+
+
+# ---------------------------------------------------------------------------
 # Command dispatch
 # ---------------------------------------------------------------------------
-def _do_command(cmd_index, state, messages, screen, clock):
+def _do_command(cmd_index, state, messages, screen, clock, lay):
     """
     Execute a command by button index. Returns:
       "ok"        — normal, continue playing
@@ -778,6 +851,8 @@ def _do_command(cmd_index, state, messages, screen, clock):
             fire_evts = [KlingonsAmbush()] + execute_klingons_fire(state)
             state.fire_first = False
             _render_events(fire_evts, messages)
+            _animate_combat_events(fire_evts, state, messages,
+                                   screen, clock, lay)
             if is_fatal(fire_evts):
                 return "destroyed"
         if _check_stranded(state, messages):
@@ -791,6 +866,7 @@ def _do_command(cmd_index, state, messages, screen, clock):
             return "ok"
         events = execute_phasers(state, PhaserCommand(energy=energy))
         _render_events(events, messages)
+        _animate_combat_events(events, state, messages, screen, clock, lay)
         if is_victory(events):
             return "victory"
         if is_fatal(events):
@@ -802,6 +878,7 @@ def _do_command(cmd_index, state, messages, screen, clock):
             return "ok"
         events = execute_torpedo(state, TorpedoCommand(course=course))
         _render_events(events, messages)
+        _animate_combat_events(events, state, messages, screen, clock, lay)
         if is_victory(events):
             return "victory"
         if is_fatal(events):
@@ -851,7 +928,6 @@ def _do_command(cmd_index, state, messages, screen, clock):
 def main():
     pygame.init()
     init_fonts()
-    init_sprites()
 
     info = pygame.display.Info()
     start_w = min(REF_W, info.current_w - 80)
@@ -859,6 +935,8 @@ def main():
     screen = pygame.display.set_mode((start_w, start_h), pygame.RESIZABLE)
     pygame.display.set_caption("SST3 Python Edition")
     clock = pygame.time.Clock()
+
+    init_sprites()
 
     difficulty = _difficulty_dialog(screen, clock)
 
@@ -925,7 +1003,7 @@ def main():
                     for i, (_name, hk) in enumerate(_CMD_BUTTONS):
                         if event.key == hk:
                             result = _do_command(i, state, messages,
-                                                 screen, clock)
+                                                 screen, clock, lay)
                             if result in ("victory", "destroyed"):
                                 game_over = True
                             break
@@ -947,7 +1025,7 @@ def main():
                   and event.button == 1 and not game_over):
                 btn = lay.hit_button(*event.pos)
                 if btn >= 0:
-                    result = _do_command(btn, state, messages, screen, clock)
+                    result = _do_command(btn, state, messages, screen, clock, lay)
                     if result in ("victory", "destroyed"):
                         game_over = True
 
@@ -982,6 +1060,7 @@ def main():
             screen.blit(sub, sub.get_rect(
                 center=(lay.win_w // 2, lay.win_h // 2 + int(20 * lay.scale))))
 
+        advance_tick()
         pygame.display.flip()
         clock.tick(FPS)
 
