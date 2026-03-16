@@ -73,6 +73,7 @@ def rotate_ship_to(screen, clock, lay, state, messages, target_row, target_col,
     if dx == 0 and dy == 0:
         return
     desired = math.degrees(math.atan2(dy, dx)) % 360
+    print(f"[DEBUG rotate_ship_to] ship=({ship_r},{ship_c}) target=({target_row},{target_col}) desired={desired:.1f} current={_gm._ship_current_angle:.1f}")
 
     # Already facing this direction?
     if abs(_angle_diff(_gm._ship_current_angle, desired)) < _ROTATION_SPEED + 1:
@@ -155,6 +156,7 @@ def play_ship_move(screen, clock, lay, state, messages,
 
     _gm._ship_current_angle = move_angle
     _gm._ship_target_angle = move_angle
+    print(f"[DEBUG play_ship_move] After phase1: move_angle={move_angle:.1f} current={_gm._ship_current_angle:.1f} target={_gm._ship_target_angle:.1f}")
 
     # Phase 2: Slide from origin to destination
     move_frames = 10
