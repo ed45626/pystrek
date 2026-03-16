@@ -1137,6 +1137,7 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
 
     # Collect torpedo track sectors for batch animation
     torpedo_sectors = []
+    torpedo_angle = None  # angle from TorpedoFired course
     in_phaser_seq = False
     last_phaser_target = None  # track to avoid redundant rotations
 
@@ -1147,6 +1148,31 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
             rotate_ship_to(screen, clock, lay, state, messages,
                            tr, tc, fps=FPS, grid_override=go)
             last_phaser_target = (tr, tc)
+
+    def _rotate_to_angle(angle_deg):
+        """Rotate Enterprise to a specific angle (degrees, CCW from east)."""
+        import gui_main as _gm
+        desired = angle_deg % 360
+        if abs(_angle_diff(_gm._ship_current_angle, desired)) < _ROTATION_SPEED + 1:
+            _gm._ship_current_angle = desired
+            _gm._ship_target_angle = desired
+            return
+        _gm._ship_target_angle = desired
+        for _ in range(90):
+            diff = _angle_diff(_gm._ship_current_angle, desired)
+            if abs(diff) < _ROTATION_SPEED + 1:
+                _gm._ship_current_angle = desired
+                break
+            _gm._ship_current_angle += _ROTATION_SPEED if diff > 0 else -_ROTATION_SPEED
+            _gm._ship_current_angle %= 360
+            for evt in pygame.event.get():
+                if evt.type == pygame.QUIT:
+                    pygame.quit()
+                    raise SystemExit
+            from gui_anim import _redraw_scene
+            _redraw_scene(screen, state, messages, lay, go)
+            pygame.display.flip()
+            clock.tick(FPS)
 
     for ev in events:
         if isinstance(ev, PhaserFired):
@@ -1195,11 +1221,12 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
             in_phaser_seq = False
             last_phaser_target = None
             torpedo_sectors = []
+            # Convert SST course to angle: course 1=E(0°), 2=NE(45°), etc.
+            torpedo_angle = (ev.course - 1) * 45.0
+            # Rotate ship to torpedo direction using the course angle
+            _rotate_to_angle(torpedo_angle)
 
         elif isinstance(ev, TorpedoTracked):
-            # Rotate toward first track sector (torpedo direction)
-            if not torpedo_sectors:
-                _rotate_to(ev.sector[0], ev.sector[1])
             torpedo_sectors.append(ev.sector)
 
         elif isinstance(ev, (TorpedoMissed, TorpedoAbsorbedByStar,
@@ -1514,6 +1541,11 @@ def main():
                         _handle_right_click(cell[0], cell[1],
                                             state, messages)
 
+        # Update rotation BEFORE draw so the rendered angle matches
+        # _ship_current_angle — prevents stale-angle discrepancy when
+        # click handlers start animations on the next frame.
+        _update_ship_rotation(state.quadrant_grid)
+
         # --- Draw ---
         screen.fill(COLORS["black"])
         _draw_title_bar(screen, state, lay)
@@ -1560,7 +1592,6 @@ def main():
             screen.blit(sub, sub.get_rect(
                 center=(lay.win_w // 2, lay.win_h // 2 + int(20 * lay.scale))))
 
-        _update_ship_rotation(state.quadrant_grid)
         advance_tick()
         pygame.display.flip()
         clock.tick(FPS)
