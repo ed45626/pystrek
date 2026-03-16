@@ -64,16 +64,21 @@ def rotate_ship_to(screen, clock, lay, state, messages, target_row, target_col,
     """Blocking animation: smoothly rotate the Enterprise to face (target_row,
     target_col) before firing. Modifies gui_main._ship_current_angle."""
     import math
-    from gui_main import (
-        _ship_current_angle, _ship_target_angle,
-        _angle_diff, _ROTATION_SPEED,
-    )
+    from gui_main import _angle_diff, _ROTATION_SPEED
     import gui_main as _gm
 
     ship_r, ship_c = state.sec_row, state.sec_col
     dx = target_col - ship_c
     dy = ship_r - target_row
-    desired = math.degrees(math.atan2(dy, dx))
+    if dx == 0 and dy == 0:
+        return
+    desired = math.degrees(math.atan2(dy, dx)) % 360
+
+    # Already facing this direction?
+    if abs(_angle_diff(_gm._ship_current_angle, desired)) < _ROTATION_SPEED + 1:
+        _gm._ship_current_angle = desired
+        _gm._ship_target_angle = desired
+        return
 
     # Override the target angle
     _gm._ship_target_angle = desired
@@ -82,7 +87,7 @@ def rotate_ship_to(screen, clock, lay, state, messages, target_row, target_col,
     for _ in range(90):
         diff = _angle_diff(_gm._ship_current_angle, desired)
         if abs(diff) < _ROTATION_SPEED + 1:
-            _gm._ship_current_angle = desired % 360
+            _gm._ship_current_angle = desired
             break
         _gm._ship_current_angle += _ROTATION_SPEED if diff > 0 else -_ROTATION_SPEED
         _gm._ship_current_angle %= 360
@@ -96,46 +101,25 @@ def play_ship_move(screen, clock, lay, state, messages,
                    from_row, from_col, to_row, to_col, fps=30):
     """Animate the Enterprise sliding smoothly from one sector cell to another.
     The actual state has already been updated; we draw the ship at interpolated
-    pixel positions overlaid on the grid."""
+    pixel positions overlaid on the grid.
+    Phase 1: rotate toward destination (ship drawn at from_row/from_col).
+    Phase 2: slide from origin to destination with ease-in-out."""
     import math
     from gui_main import (
         _draw_title_bar, _draw_grid, _draw_status_panel,
         _draw_command_bar, _draw_message_log,
-        _ship_current_angle,
+        _angle_diff, _ROTATION_SPEED,
     )
     import gui_main as _gm
 
-    # Point ship in movement direction
-    dx = to_col - from_col
-    dy = from_row - to_row
-    if dx != 0 or dy != 0:
-        move_angle = math.degrees(math.atan2(dy, dx))
-        _gm._ship_current_angle = move_angle % 360
-        _gm._ship_target_angle = move_angle % 360
-
-    sx, sy = lay.cell_center(from_row, from_col)
-    ex, ey = lay.cell_center(to_row, to_col)
-    move_frames = 10
-
-    for i in range(move_frames):
-        _pump_events()
-        t = (i + 1) / move_frames
-        # Ease-in-out
-        t = t * t * (3 - 2 * t)
-        px = int(sx + (ex - sx) * t)
-        py = int(sy + (ey - sy) * t)
-
-        # Redraw scene (ship is already at to_row,to_col in state,
-        # so we draw grid but override the ship position visually)
+    def _draw_ship_at(px, py):
+        """Draw the ship sprite at pixel (px, py) over a ship-hidden scene."""
         screen.fill(COLORS["black"])
         _draw_title_bar(screen, state, lay)
-        # Draw grid without the ship (we'll draw it at interpolated pos)
         _draw_grid(screen, state.quadrant_grid, lay, hide_ship=True)
         _draw_status_panel(screen, state, lay)
         _draw_command_bar(screen, lay)
         _draw_message_log(screen, messages, lay)
-
-        # Draw ship at interpolated position
         ent_rect = lay.entity_rect("ship", px, py)
         spr = sprite("ship", ent_rect.width, ent_rect.height,
                       angle=_gm._ship_current_angle)
@@ -145,6 +129,42 @@ def play_ship_move(screen, clock, lay, state, messages,
         else:
             pygame.draw.rect(screen, COLORS["bright_cyan"], ent_rect)
 
+    # Calculate movement direction angle
+    dx = to_col - from_col
+    dy = from_row - to_row
+    if dx != 0 or dy != 0:
+        move_angle = math.degrees(math.atan2(dy, dx)) % 360
+    else:
+        move_angle = _gm._ship_current_angle
+
+    sx, sy = lay.cell_center(from_row, from_col)
+    ex, ey = lay.cell_center(to_row, to_col)
+
+    # Phase 1: Rotate toward destination (ship stays at origin)
+    for _ in range(90):
+        diff = _angle_diff(_gm._ship_current_angle, move_angle)
+        if abs(diff) < _ROTATION_SPEED + 1:
+            _gm._ship_current_angle = move_angle
+            break
+        _gm._ship_current_angle += _ROTATION_SPEED if diff > 0 else -_ROTATION_SPEED
+        _gm._ship_current_angle %= 360
+        _pump_events()
+        _draw_ship_at(sx, sy)
+        pygame.display.flip()
+        clock.tick(fps)
+
+    _gm._ship_current_angle = move_angle
+    _gm._ship_target_angle = move_angle
+
+    # Phase 2: Slide from origin to destination
+    move_frames = 10
+    for i in range(move_frames):
+        _pump_events()
+        t = (i + 1) / move_frames
+        t = t * t * (3 - 2 * t)  # smoothstep ease-in-out
+        px = int(sx + (ex - sx) * t)
+        py = int(sy + (ey - sy) * t)
+        _draw_ship_at(px, py)
         pygame.display.flip()
         clock.tick(fps)
 
@@ -259,32 +279,47 @@ def play_phasor_hit(screen, clock, lay, state, messages,
 
 def play_torpedo_track(screen, clock, lay, state, messages,
                        sectors, fps=30, grid_override=None):
-    """Animate a photon torpedo moving through a list of (row, col) sectors."""
+    """Animate a photon torpedo moving smoothly through sector cells.
+    Interpolates between cell centers for fluid movement."""
     if not sectors:
         return
 
-    frames_per_sector = 4
-    spr_size = int(36 * lay.scale)
+    import gui_main as _gm
 
-    for si, (row, col) in enumerate(sectors):
-        cx, cy = lay.cell_center(row, col)
-        for f in range(frames_per_sector):
+    spr_size = int(36 * lay.scale)
+    # Build list of waypoints (pixel coordinates)
+    # Start from the Enterprise position
+    ship_x, ship_y = lay.cell_center(state.sec_row, state.sec_col)
+    waypoints = [(ship_x, ship_y)]
+    for row, col in sectors:
+        waypoints.append(lay.cell_center(row, col))
+
+    frames_per_segment = 4
+    total_frame = 0
+
+    for seg in range(len(waypoints) - 1):
+        sx, sy = waypoints[seg]
+        ex, ey = waypoints[seg + 1]
+        for f in range(frames_per_segment):
             _pump_events()
             _redraw_scene(screen, state, messages, lay, grid_override)
 
-            # Draw torpedo sprite
-            frame_idx = (si * frames_per_sector + f) // 3
+            t = (f + 1) / frames_per_segment
+            px = int(sx + (ex - sx) * t)
+            py = int(sy + (ey - sy) * t)
+
+            frame_idx = total_frame // 3
             spr = sprite("photon", spr_size, spr_size, frame=frame_idx)
             if spr is not None:
-                rect = spr.get_rect(center=(cx, cy))
+                rect = spr.get_rect(center=(px, py))
                 screen.blit(spr, rect)
             else:
-                # Fallback red circle
                 pygame.draw.circle(screen, COLORS["bright_red"],
-                                   (cx, cy), max(4, int(8 * lay.scale)))
+                                   (px, py), max(4, int(8 * lay.scale)))
 
             pygame.display.flip()
             clock.tick(fps)
+            total_frame += 1
 
 
 def play_klingon_fires(screen, clock, lay, state, messages,

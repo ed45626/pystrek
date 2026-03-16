@@ -201,7 +201,8 @@ def _angle_diff(a, b):
 
 def _enterprise_target_angle(grid, ship_row, ship_col):
     """Return desired rotation angle (degrees, CCW from east) for the
-    Enterprise to face the nearest Klingon, or nearest starbase."""
+    Enterprise to face the nearest Klingon, or nearest starbase.
+    Returns None if no targets — caller should preserve current heading."""
     best_target = None
     best_dist = 999
 
@@ -225,7 +226,7 @@ def _enterprise_target_angle(grid, ship_row, ship_col):
                         best_target = (r, c)
 
     if best_target is None:
-        return 0.0  # face east by default
+        return None  # no target — preserve current heading
 
     tr, tc = best_target
     dx = tc - ship_col   # positive = east
@@ -234,13 +235,17 @@ def _enterprise_target_angle(grid, ship_row, ship_col):
 
 
 def _update_ship_rotation(grid):
-    """Advance smooth rotation one step toward target. Call once per frame."""
+    """Advance smooth rotation one step toward target. Call once per frame.
+    If no target exists, preserves current heading."""
     global _ship_current_angle, _ship_target_angle
 
     ship_pos = grid.find(SHIP)
     if ship_pos:
-        _ship_target_angle = _enterprise_target_angle(
+        new_target = _enterprise_target_angle(
             grid, ship_pos[0][0], ship_pos[0][1])
+        if new_target is not None:
+            _ship_target_angle = new_target
+        # else: keep _ship_target_angle as-is (preserve heading)
 
     diff = _angle_diff(_ship_current_angle, _ship_target_angle)
     if abs(diff) < _ROTATION_SPEED:
@@ -1225,28 +1230,24 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
 # ---------------------------------------------------------------------------
 # Navigation animation
 # ---------------------------------------------------------------------------
-def _animate_nav_events(events, state, messages, screen, clock, lay):
-    """Animate ShipMoved events: rotate toward destination then slide."""
+def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
+    """Execute navigation with smooth animation. Returns event list.
+    Rotates ship toward destination BEFORE executing nav, then slides."""
+    global _ship_current_angle, _ship_target_angle
+
+    old_row, old_col = state.sec_row, state.sec_col
+    events = execute_nav(state, NavCommand(course=course, warp=warp))
+    _render_events(events, messages)
+
+    # Find ShipMoved events and animate them
     for ev in events:
         if isinstance(ev, ShipMoved):
             fr, fc = ev.from_sector
             tr, tc = ev.to_sector
-            # Rotate toward destination
-            rotate_ship_to(screen, clock, lay, state, messages,
-                           tr, tc, fps=FPS)
-            # Smooth slide
+            # Smooth slide (rotation set inside play_ship_move)
             play_ship_move(screen, clock, lay, state, messages,
                            fr, fc, tr, tc, fps=FPS)
 
-
-def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
-    """Execute navigation with smooth animation. Returns event list."""
-    # Snapshot ship position before nav
-    old_row, old_col = state.sec_row, state.sec_col
-    events = execute_nav(state, NavCommand(course=course, warp=warp))
-    _render_events(events, messages)
-    # Animate movement
-    _animate_nav_events(events, state, messages, screen, clock, lay)
     return events
 
 
