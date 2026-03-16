@@ -20,7 +20,7 @@ from galaxy import init_new_game, enter_quadrant
 from quadrant import EMPTY, STAR, KLINGON, SHIP, BASE
 from gui_assets import (
     COLORS, ENTITY_COLORS, CONDITION_COLORS, STATUS_STYLES,
-    init_fonts, font,
+    init_fonts, font, init_sprites, sprite, clear_sprite_cache,
 )
 from gui_input import (
     nav_input, phaser_input, torpedo_input, shield_input,
@@ -62,10 +62,10 @@ _REF_GRID_X = 24
 _REF_GRID_Y = 60
 
 _REF_RECT_SIZES = {
-    "ship":    (56, 56),
-    "klingon": (46, 46),
-    "base":    (40, 50),
-    "star":    (12, 12),
+    "ship":    (64, 64),
+    "klingon": (64, 34),
+    "base":    (44, 54),
+    "star":    (30, 30),
 }
 
 _ENTITY_LABELS = {"ship": "E", "klingon": "K", "base": "B", "star": "*"}
@@ -188,10 +188,13 @@ def _draw_grid(surface, grid, lay):
             if color is None:
                 continue
             cx, cy = lay.cell_center(row, col)
-            if key == "star":
+            ent_rect = lay.entity_rect(key, cx, cy)
+            spr = sprite(key, ent_rect.width, ent_rect.height)
+            if spr is not None:
+                surface.blit(spr, ent_rect)
+            elif key == "star":
                 pygame.draw.circle(surface, color, (cx, cy), lay.star_radius())
             else:
-                ent_rect = lay.entity_rect(key, cx, cy)
                 pygame.draw.rect(surface, color, ent_rect)
                 pygame.draw.rect(surface, COLORS["bright_white"], ent_rect, 1)
                 lbl = _ENTITY_LABELS.get(key, "?")
@@ -848,6 +851,7 @@ def _do_command(cmd_index, state, messages, screen, clock):
 def main():
     pygame.init()
     init_fonts()
+    init_sprites()
 
     info = pygame.display.Info()
     start_w = min(REF_W, info.current_w - 80)
@@ -897,6 +901,7 @@ def main():
             elif event.type == pygame.VIDEORESIZE:
                 screen = pygame.display.set_mode(
                     (event.w, event.h), pygame.RESIZABLE)
+                clear_sprite_cache()
                 lay = Layout(event.w, event.h)
 
             elif event.type == pygame.KEYDOWN and not game_over:

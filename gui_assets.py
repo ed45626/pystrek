@@ -1,10 +1,9 @@
 """
 gui_assets.py  –  SST3 Python Edition GUI
-Phase 1: Asset management — colours, fonts, and future sprite loading.
-
-No external asset files are needed for Phase 1 (coloured rectangles only).
+Asset management — colours, fonts, and sprite loading/caching.
 """
 
+import os
 import pygame
 
 # ---------------------------------------------------------------------------
@@ -102,3 +101,87 @@ def font(size: int = 16) -> pygame.font.Font:
     if _fonts is None:
         init_fonts()
     return _fonts.get(size)
+
+
+# ---------------------------------------------------------------------------
+# Sprite loading and caching
+# ---------------------------------------------------------------------------
+_ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "assets", "sprites")
+
+# Maps entity key → list of frame filenames (for animation in Phase 5)
+_SPRITE_FILES = {
+    "ship":      ["enterprise_1.png", "enterprise_2.png", "enterprise_3.png"],
+    "klingon":   ["klingon_1.png", "klingon_2.png", "klingon_3.png"],
+    "base":      ["starbase_1.png", "starbase_2.png"],
+    "star":      ["star_2.png", "star_1.png", "star_3.png"],
+    "explosion": ["explosion_1.png", "explosion_2.png", "explosion_3.png",
+                  "explosion_4.png", "explosion_5.png"],
+    "phasor":    ["phasor_1.png", "phasor_2.png", "phasor_3.png",
+                  "phasor_4.png"],
+    "photon":    ["photon_1.png", "photon_2.png", "photon_3.png",
+                  "photon_4.png"],
+}
+
+
+class SpriteCache:
+    """Load sprites once, scale and cache per target size."""
+
+    def __init__(self):
+        # key → list[Surface]  (original full-size frames)
+        self._originals: dict[str, list[pygame.Surface]] = {}
+        # (key, w, h, frame_index) → Surface
+        self._scaled: dict[tuple, pygame.Surface] = {}
+        self._load_all()
+
+    def _load_all(self):
+        for key, filenames in _SPRITE_FILES.items():
+            frames = []
+            for fn in filenames:
+                path = os.path.join(_ASSET_DIR, fn)
+                if os.path.exists(path):
+                    surf = pygame.image.load(path).convert_alpha()
+                    frames.append(surf)
+            if frames:
+                self._originals[key] = frames
+
+    def get(self, key: str, width: int, height: int,
+            frame: int = 0) -> pygame.Surface | None:
+        """Return a sprite scaled to (width, height), or None if missing."""
+        frames = self._originals.get(key)
+        if not frames:
+            return None
+        idx = frame % len(frames)
+        cache_key = (key, width, height, idx)
+        if cache_key not in self._scaled:
+            self._scaled[cache_key] = pygame.transform.smoothscale(
+                frames[idx], (width, height))
+        return self._scaled[cache_key]
+
+    def clear_cache(self):
+        """Drop scaled cache (call on window resize)."""
+        self._scaled.clear()
+
+
+# Module-level singleton
+_sprites: SpriteCache | None = None
+
+
+def init_sprites():
+    """Call once after pygame.init() and display mode set."""
+    global _sprites
+    _sprites = SpriteCache()
+
+
+def sprite(key: str, width: int, height: int,
+           frame: int = 0) -> pygame.Surface | None:
+    """Get a cached, scaled sprite. Returns None if sprites not loaded."""
+    if _sprites is None:
+        return None
+    return _sprites.get(key, width, height, frame)
+
+
+def clear_sprite_cache():
+    """Call on window resize to flush scaled sprites."""
+    if _sprites is not None:
+        _sprites.clear_cache()
