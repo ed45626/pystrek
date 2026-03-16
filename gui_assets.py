@@ -189,16 +189,23 @@ class SpriteCache:
         _star_type_count = len(_star_type_keys)
 
     def get(self, key: str, width: int, height: int,
-            frame: int = 0) -> pygame.Surface | None:
-        """Return a sprite scaled to (width, height), or None if missing."""
+            frame: int = 0, angle: float = 0.0) -> pygame.Surface | None:
+        """Return a sprite scaled to (width, height) and rotated by angle
+        degrees counter-clockwise. Returns None if missing.
+        Angle is quantized to 5° steps for cache efficiency."""
         frames = self._originals.get(key)
         if not frames:
             return None
         idx = frame % len(frames)
-        cache_key = (key, width, height, idx)
+        # Quantize angle to 5-degree steps
+        qa = round(angle / 5) * 5 % 360
+        cache_key = (key, width, height, idx, qa)
         if cache_key not in self._scaled:
-            self._scaled[cache_key] = pygame.transform.smoothscale(
+            scaled = pygame.transform.smoothscale(
                 frames[idx], (width, height))
+            if qa != 0:
+                scaled = pygame.transform.rotate(scaled, qa)
+            self._scaled[cache_key] = scaled
         return self._scaled[cache_key]
 
     def clear_cache(self):
@@ -217,11 +224,13 @@ def init_sprites():
 
 
 def sprite(key: str, width: int, height: int,
-           frame: int = 0) -> pygame.Surface | None:
-    """Get a cached, scaled sprite. Returns None if sprites not loaded."""
+           frame: int = 0, angle: float = 0.0) -> pygame.Surface | None:
+    """Get a cached, scaled, optionally rotated sprite.
+    angle: degrees counter-clockwise (0 = east, 90 = north, etc.)
+    Returns None if sprites not loaded."""
     if _sprites is None:
         return None
-    return _sprites.get(key, width, height, frame)
+    return _sprites.get(key, width, height, frame, angle)
 
 
 def clear_sprite_cache():

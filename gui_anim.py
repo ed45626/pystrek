@@ -84,38 +84,84 @@ def play_explosion(screen, clock, lay, state, messages, row, col, fps=30,
         clock.tick(fps)
 
 
+def _draw_beam(screen, sx, sy, bx, by, outer_color, mid_color, core_color,
+               beam_w, alpha=255):
+    """Draw a 3-layer beam: outer glow, mid beam, bright core."""
+    if alpha < 255:
+        # Use a temporary surface for transparency
+        w, h = screen.get_size()
+        tmp = pygame.Surface((w, h), pygame.SRCALPHA)
+        glow_w = beam_w * 3
+        pygame.draw.line(tmp, (*outer_color[:3], min(alpha, 40)),
+                         (sx, sy), (bx, by), glow_w)
+        pygame.draw.line(tmp, (*mid_color[:3], min(alpha, 180)),
+                         (sx, sy), (bx, by), beam_w)
+        core_w = max(2, beam_w // 2)
+        pygame.draw.line(tmp, (*core_color[:3], alpha),
+                         (sx, sy), (bx, by), core_w)
+        screen.blit(tmp, (0, 0))
+    else:
+        # Outer glow
+        glow_w = beam_w * 3
+        glow_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+        pygame.draw.line(glow_surf, (*outer_color[:3], 40),
+                         (sx, sy), (bx, by), glow_w)
+        screen.blit(glow_surf, (0, 0))
+        # Mid beam
+        pygame.draw.line(screen, mid_color, (sx, sy), (bx, by), beam_w)
+        # Bright core
+        core_w = max(2, beam_w // 2)
+        pygame.draw.line(screen, core_color, (sx, sy), (bx, by), core_w)
+
+
 def play_phasor_hit(screen, clock, lay, state, messages,
                     from_row, from_col, to_row, to_col, fps=30,
                     grid_override=None):
-    """Animate a phasor beam from Enterprise to target Klingon."""
+    """Animate a phasor beam from Enterprise to target Klingon.
+    Blue beam with glow — extends to target then fades out."""
     sx, sy = lay.cell_center(from_row, from_col)
     ex, ey = lay.cell_center(to_row, to_col)
-    beam_frames = 18
-    beam_w = max(4, int(6 * lay.scale))
+    extend_frames = 10   # beam extends to target
+    hold_frames = 4      # beam holds at full
+    fade_frames = 6      # beam fades out
+    total = extend_frames + hold_frames + fade_frames
+    beam_w = max(4, int(7 * lay.scale))
 
-    for i in range(beam_frames):
+    for i in range(total):
         _pump_events()
         _redraw_scene(screen, state, messages, lay, grid_override)
 
-        # Draw phasor beam — grows from source to target
-        progress = min(1.0, (i + 1) / (beam_frames * 0.6))
-        bx = int(sx + (ex - sx) * progress)
-        by = int(sy + (ey - sy) * progress)
-        # Beam color pulses
-        intensity = 180 + int(75 * (1 - (i / beam_frames)))
-        beam_color = (100, 150, min(255, intensity))
-        pygame.draw.line(screen, beam_color, (sx, sy), (bx, by), beam_w)
-        # Bright core
-        core_w = max(2, beam_w // 2)
-        pygame.draw.line(screen, (180, 220, 255), (sx, sy), (bx, by), core_w)
+        if i < extend_frames:
+            # Extend phase
+            progress = (i + 1) / extend_frames
+            bx = int(sx + (ex - sx) * progress)
+            by = int(sy + (ey - sy) * progress)
+            alpha = 255
+        elif i < extend_frames + hold_frames:
+            # Hold at full
+            bx, by = ex, ey
+            alpha = 255
+        else:
+            # Fade out
+            fade_i = i - extend_frames - hold_frames
+            bx, by = ex, ey
+            alpha = max(0, 255 - int(255 * fade_i / fade_frames))
+
+        # Blue beam colors
+        _draw_beam(screen, sx, sy, bx, by,
+                   outer_color=(60, 100, 255),    # blue glow
+                   mid_color=(80, 140, 255),       # mid blue
+                   core_color=(180, 220, 255),     # bright white-blue core
+                   beam_w=beam_w, alpha=alpha)
 
         # Phasor sprite at beam tip
-        spr_size = int(40 * lay.scale)
-        frame_idx = i // (beam_frames // 4 + 1)
-        spr = sprite("phasor", spr_size, spr_size, frame=frame_idx)
-        if spr is not None:
-            rect = spr.get_rect(center=(bx, by))
-            screen.blit(spr, rect)
+        if alpha > 100:
+            spr_size = int(40 * lay.scale)
+            frame_idx = i // (total // 4 + 1)
+            spr = sprite("phasor", spr_size, spr_size, frame=frame_idx)
+            if spr is not None:
+                rect = spr.get_rect(center=(bx, by))
+                screen.blit(spr, rect)
 
         pygame.display.flip()
         clock.tick(fps)
@@ -154,26 +200,38 @@ def play_torpedo_track(screen, clock, lay, state, messages,
 def play_klingon_fires(screen, clock, lay, state, messages,
                        from_row, from_col, to_row, to_col, fps=30,
                        grid_override=None):
-    """Animate enemy fire from Klingon to Enterprise (green beam)."""
+    """Animate enemy fire from Klingon to Enterprise (red/orange beam with glow)."""
     sx, sy = lay.cell_center(from_row, from_col)
     ex, ey = lay.cell_center(to_row, to_col)
-    beam_frames = 14
-    beam_w = max(3, int(5 * lay.scale))
+    extend_frames = 8
+    hold_frames = 3
+    fade_frames = 4
+    total = extend_frames + hold_frames + fade_frames
+    beam_w = max(3, int(6 * lay.scale))
 
-    for i in range(beam_frames):
+    for i in range(total):
         _pump_events()
         _redraw_scene(screen, state, messages, lay, grid_override)
 
-        progress = min(1.0, (i + 1) / (beam_frames * 0.6))
-        bx = int(sx + (ex - sx) * progress)
-        by = int(sy + (ey - sy) * progress)
-        # Red/orange beam for enemy fire
-        intensity = 180 + int(75 * (1 - (i / beam_frames)))
-        beam_color = (min(255, intensity), 80, 60)
-        pygame.draw.line(screen, beam_color, (sx, sy), (bx, by), beam_w)
-        core_color = (255, 140, 100)
-        core_w = max(2, beam_w // 2)
-        pygame.draw.line(screen, core_color, (sx, sy), (bx, by), core_w)
+        if i < extend_frames:
+            progress = (i + 1) / extend_frames
+            bx = int(sx + (ex - sx) * progress)
+            by = int(sy + (ey - sy) * progress)
+            alpha = 255
+        elif i < extend_frames + hold_frames:
+            bx, by = ex, ey
+            alpha = 255
+        else:
+            fade_i = i - extend_frames - hold_frames
+            bx, by = ex, ey
+            alpha = max(0, 255 - int(255 * fade_i / fade_frames))
+
+        # Red/orange beam colors
+        _draw_beam(screen, sx, sy, bx, by,
+                   outer_color=(255, 80, 40),      # red glow
+                   mid_color=(255, 120, 60),        # orange mid
+                   core_color=(255, 200, 140),      # bright yellow-white core
+                   beam_w=beam_w, alpha=alpha)
 
         pygame.display.flip()
         clock.tick(fps)

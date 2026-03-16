@@ -11,6 +11,7 @@ Launch:  python gui_main.py
 import sys
 import os
 import io
+import math
 import contextlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -182,7 +183,45 @@ class Layout:
 
 
 # ---------------------------------------------------------------------------
-# Drawing helpers (unchanged from Phase 1, just pass lay)
+# Enterprise facing angle  (sprites point east = 0°)
+# ---------------------------------------------------------------------------
+def _enterprise_facing(grid, ship_row, ship_col):
+    """Return rotation angle (degrees, CCW from east) for the Enterprise
+    to face the nearest Klingon, or nearest starbase if no Klingons."""
+    best_target = None
+    best_dist = 999
+
+    # Priority 1: nearest Klingon
+    for r in range(1, 9):
+        for c in range(1, 9):
+            if grid.get(r, c) == KLINGON:
+                d = math.hypot(r - ship_row, c - ship_col)
+                if d < best_dist:
+                    best_dist = d
+                    best_target = (r, c)
+
+    # Priority 2: nearest starbase (if no Klingons)
+    if best_target is None:
+        for r in range(1, 9):
+            for c in range(1, 9):
+                if grid.get(r, c) == BASE:
+                    d = math.hypot(r - ship_row, c - ship_col)
+                    if d < best_dist:
+                        best_dist = d
+                        best_target = (r, c)
+
+    if best_target is None:
+        return 0.0  # face east by default
+
+    tr, tc = best_target
+    dx = tc - ship_col   # positive = east
+    dy = ship_row - tr    # positive = north (row decreases upward)
+    # atan2(dy, dx) gives angle from east, CCW — matches pygame.rotate
+    return math.degrees(math.atan2(dy, dx))
+
+
+# ---------------------------------------------------------------------------
+# Drawing helpers
 # ---------------------------------------------------------------------------
 def _draw_grid(surface, grid, lay):
     bg_rect = pygame.Rect(lay.grid_x, lay.grid_y, lay.grid, lay.grid)
@@ -195,6 +234,12 @@ def _draw_grid(surface, grid, lay):
         y = lay.grid_y + i * lay.cell
         pygame.draw.line(surface, COLORS["grid_line"],
                          (lay.grid_x, y), (lay.grid_x + lay.grid, y))
+
+    # Pre-compute Enterprise facing angle
+    ship_pos = grid.find(SHIP)
+    ship_angle = 0.0
+    if ship_pos:
+        ship_angle = _enterprise_facing(grid, ship_pos[0][0], ship_pos[0][1])
 
     label_font = font(lay.font_entity)
     for row in range(1, 9):
@@ -209,9 +254,14 @@ def _draw_grid(surface, grid, lay):
             # Idle animation: cycle frames for ship, stars, bases
             spr_key = star_sprite_key(row, col) if key == "star" else key
             frame = idle_frame(spr_key, cycle_speed=15) if key in ("ship", "star", "base") else 0
-            spr = sprite(spr_key, ent_rect.width, ent_rect.height, frame=frame)
+            # Rotate Enterprise to face nearest threat
+            angle = ship_angle if key == "ship" else 0.0
+            spr = sprite(spr_key, ent_rect.width, ent_rect.height,
+                         frame=frame, angle=angle)
             if spr is not None:
-                surface.blit(spr, ent_rect)
+                # Rotation changes surface size; blit centered on cell
+                spr_rect = spr.get_rect(center=(cx, cy))
+                surface.blit(spr, spr_rect)
             elif key == "star":
                 pygame.draw.circle(surface, color, (cx, cy), lay.star_radius())
             else:
