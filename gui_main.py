@@ -185,9 +185,22 @@ class Layout:
 # ---------------------------------------------------------------------------
 # Enterprise facing angle  (sprites point east = 0°)
 # ---------------------------------------------------------------------------
-def _enterprise_facing(grid, ship_row, ship_col):
-    """Return rotation angle (degrees, CCW from east) for the Enterprise
-    to face the nearest Klingon, or nearest starbase if no Klingons."""
+_ship_current_angle = 0.0   # smoothly interpolated display angle
+_ship_target_angle = 0.0    # desired angle toward threat
+_ROTATION_SPEED = 4.0       # degrees per frame of lerp
+
+
+def _angle_diff(a, b):
+    """Shortest signed angle from a to b, in [-180, 180]."""
+    d = (b - a) % 360
+    if d > 180:
+        d -= 360
+    return d
+
+
+def _enterprise_target_angle(grid, ship_row, ship_col):
+    """Return desired rotation angle (degrees, CCW from east) for the
+    Enterprise to face the nearest Klingon, or nearest starbase."""
     best_target = None
     best_dist = 999
 
@@ -216,13 +229,98 @@ def _enterprise_facing(grid, ship_row, ship_col):
     tr, tc = best_target
     dx = tc - ship_col   # positive = east
     dy = ship_row - tr    # positive = north (row decreases upward)
-    # atan2(dy, dx) gives angle from east, CCW — matches pygame.rotate
     return math.degrees(math.atan2(dy, dx))
+
+
+def _update_ship_rotation(grid):
+    """Advance smooth rotation one step toward target. Call once per frame."""
+    global _ship_current_angle, _ship_target_angle
+
+    ship_pos = grid.find(SHIP)
+    if ship_pos:
+        _ship_target_angle = _enterprise_target_angle(
+            grid, ship_pos[0][0], ship_pos[0][1])
+
+    diff = _angle_diff(_ship_current_angle, _ship_target_angle)
+    if abs(diff) < _ROTATION_SPEED:
+        _ship_current_angle = _ship_target_angle
+    else:
+        _ship_current_angle += _ROTATION_SPEED if diff > 0 else -_ROTATION_SPEED
+    _ship_current_angle %= 360
 
 
 # ---------------------------------------------------------------------------
 # Drawing helpers
 # ---------------------------------------------------------------------------
+def _draw_combat_compass(surface, lay, ship_row, ship_col, klingon_positions):
+    """Draw a compass ring around the Enterprise with directional markers
+    pointing toward each Klingon. Shows course numbers at cardinal points."""
+    cx, cy = lay.cell_center(ship_row, ship_col)
+    radius = int(lay.cell * 0.9)
+    inner_r = int(lay.cell * 0.65)
+
+    # Draw compass ring (semi-transparent)
+    ring_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+
+    # Outer ring
+    pygame.draw.circle(ring_surf, (80, 160, 255, 35), (cx, cy), radius, 0)
+    pygame.draw.circle(ring_surf, (80, 160, 255, 80), (cx, cy), radius,
+                       max(1, int(2 * lay.scale)))
+    # Inner cutout (clear the center so entities show through)
+    pygame.draw.circle(ring_surf, (0, 0, 0, 0), (cx, cy), inner_r, 0)
+    surface.blit(ring_surf, (0, 0))
+
+    # Course direction labels at cardinal points
+    # Course: 1=E, 3=N, 5=W, 7=S (matching the SST course wheel)
+    course_labels = [
+        (1, 0.0),    # East
+        (2, 45.0),   # NE
+        (3, 90.0),   # North
+        (4, 135.0),  # NW
+        (5, 180.0),  # West
+        (6, 225.0),  # SW
+        (7, 270.0),  # South
+        (8, 315.0),  # SE
+    ]
+    label_r = radius + int(8 * lay.scale)
+    cf = font(max(7, int(11 * lay.scale)))
+    for course_num, angle_deg in course_labels:
+        rad = math.radians(angle_deg)
+        lx = cx + int(label_r * math.cos(rad))
+        ly = cy - int(label_r * math.sin(rad))
+        txt = cf.render(str(course_num), True, (100, 160, 255))
+        surface.blit(txt, txt.get_rect(center=(lx, ly)))
+
+    # Draw target markers pointing toward each Klingon
+    marker_r = int((radius + inner_r) / 2)
+    for kr, kc in klingon_positions:
+        dx = kc - ship_col
+        dy = ship_row - kr  # flip: row increases downward
+        angle = math.atan2(dy, dx)
+
+        # Triangular marker on compass ring
+        mx = cx + int(marker_r * math.cos(angle))
+        my = cy - int(marker_r * math.sin(angle))
+        marker_size = max(4, int(8 * lay.scale))
+
+        # Arrow pointing outward
+        perp = angle + math.pi / 2
+        tip_x = cx + int((marker_r + marker_size) * math.cos(angle))
+        tip_y = cy - int((marker_r + marker_size) * math.sin(angle))
+        left_x = mx + int(marker_size * 0.6 * math.cos(perp))
+        left_y = my - int(marker_size * 0.6 * math.sin(perp))
+        right_x = mx - int(marker_size * 0.6 * math.cos(perp))
+        right_y = my + int(marker_size * 0.6 * math.sin(perp))
+
+        pygame.draw.polygon(surface, COLORS["bright_red"],
+                            [(tip_x, tip_y), (left_x, left_y),
+                             (right_x, right_y)])
+        # Bright outline
+        pygame.draw.polygon(surface, (255, 160, 160),
+                            [(tip_x, tip_y), (left_x, left_y),
+                             (right_x, right_y)], 1)
+
+
 def _draw_grid(surface, grid, lay):
     bg_rect = pygame.Rect(lay.grid_x, lay.grid_y, lay.grid, lay.grid)
     pygame.draw.rect(surface, COLORS["grid_bg"], bg_rect)
@@ -234,12 +332,6 @@ def _draw_grid(surface, grid, lay):
         y = lay.grid_y + i * lay.cell
         pygame.draw.line(surface, COLORS["grid_line"],
                          (lay.grid_x, y), (lay.grid_x + lay.grid, y))
-
-    # Pre-compute Enterprise facing angle
-    ship_pos = grid.find(SHIP)
-    ship_angle = 0.0
-    if ship_pos:
-        ship_angle = _enterprise_facing(grid, ship_pos[0][0], ship_pos[0][1])
 
     label_font = font(lay.font_entity)
     for row in range(1, 9):
@@ -254,8 +346,8 @@ def _draw_grid(surface, grid, lay):
             # Idle animation: cycle frames for ship, stars, bases
             spr_key = star_sprite_key(row, col) if key == "star" else key
             frame = idle_frame(spr_key, cycle_speed=15) if key in ("ship", "star", "base") else 0
-            # Rotate Enterprise to face nearest threat
-            angle = ship_angle if key == "ship" else 0.0
+            # Rotate Enterprise smoothly toward nearest threat
+            angle = _ship_current_angle if key == "ship" else 0.0
             spr = sprite(spr_key, ent_rect.width, ent_rect.height,
                          frame=frame, angle=angle)
             if spr is not None:
@@ -270,6 +362,14 @@ def _draw_grid(surface, grid, lay):
                 lbl = _ENTITY_LABELS.get(key, "?")
                 txt = label_font.render(lbl, True, COLORS["black"])
                 surface.blit(txt, txt.get_rect(center=(cx, cy)))
+
+    # Combat compass overlay — show targeting markers when Klingons present
+    ship_pos = grid.find(SHIP)
+    klingon_pos = grid.find(KLINGON)
+    if ship_pos and klingon_pos:
+        _draw_combat_compass(surface, lay,
+                             ship_pos[0][0], ship_pos[0][1],
+                             klingon_pos)
 
     pygame.draw.rect(surface, COLORS["bright_white"], bg_rect, 2)
 
@@ -1011,18 +1111,27 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
 
     # Collect torpedo track sectors for batch animation
     torpedo_sectors = []
+    in_phaser_seq = False  # True after PhaserFired, cleared on non-phaser event
 
     for ev in events:
         if isinstance(ev, PhaserFired):
-            pass  # beam drawn per KlingonHit below
+            in_phaser_seq = True
+
+        elif isinstance(ev, KlingonNoDamage):
+            # Phaser beam fires but does no damage — still show the beam
+            if in_phaser_seq:
+                play_phasor_hit(screen, clock, lay, state, messages,
+                                ship_row, ship_col,
+                                ev.sector[0], ev.sector[1], fps=FPS,
+                                grid_override=go)
 
         elif isinstance(ev, KlingonHit):
-            play_phasor_hit(screen, clock, lay, state, messages,
-                            ship_row, ship_col,
-                            ev.sector[0], ev.sector[1], fps=FPS,
-                            grid_override=go)
-            # If klingon survived, no need to update snapshot
-            # If destroyed, the next KlingonDestroyed event handles it
+            # Phaser beam hits — show beam
+            if in_phaser_seq:
+                play_phasor_hit(screen, clock, lay, state, messages,
+                                ship_row, ship_col,
+                                ev.sector[0], ev.sector[1], fps=FPS,
+                                grid_override=go)
 
         elif isinstance(ev, KlingonDestroyed):
             # Flush torpedo track if torpedo killed this klingon
@@ -1031,6 +1140,12 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
                                    torpedo_sectors, fps=FPS,
                                    grid_override=go)
                 torpedo_sectors = []
+            # If phasers killed it, fire beam first
+            if in_phaser_seq:
+                play_phasor_hit(screen, clock, lay, state, messages,
+                                ship_row, ship_col,
+                                ev.sector[0], ev.sector[1], fps=FPS,
+                                grid_override=go)
             # Explosion plays over the klingon (still in snapshot)
             play_explosion(screen, clock, lay, state, messages,
                            ev.sector[0], ev.sector[1], fps=FPS,
@@ -1040,6 +1155,7 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
                 go.clear(ev.sector[0], ev.sector[1])
 
         elif isinstance(ev, TorpedoFired):
+            in_phaser_seq = False
             torpedo_sectors = []
 
         elif isinstance(ev, TorpedoTracked):
@@ -1058,6 +1174,9 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
                                grid_override=go)
                 if go is not None:
                     go.clear(ev.sector[0], ev.sector[1])
+
+        elif isinstance(ev, KlingonsCounterFire):
+            in_phaser_seq = False
 
         elif isinstance(ev, KlingonFired):
             play_klingon_fires(screen, clock, lay, state, messages,
@@ -1358,6 +1477,7 @@ def main():
             screen.blit(sub, sub.get_rect(
                 center=(lay.win_w // 2, lay.win_h // 2 + int(20 * lay.scale))))
 
+        _update_ship_rotation(state.quadrant_grid)
         advance_tick()
         pygame.display.flip()
         clock.tick(FPS)
