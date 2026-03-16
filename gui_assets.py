@@ -4,6 +4,7 @@ Asset management — colours, fonts, and sprite loading/caching.
 """
 
 import os
+import re
 import pygame
 
 # ---------------------------------------------------------------------------
@@ -124,6 +125,38 @@ _SPRITE_FILES = {
 }
 
 
+def _discover_star_types():
+    """Scan asset dir for star{N}_*.png patterns and register them.
+    E.g. star1_1.png, star1_2.png → key "star1" with 2 frames.
+    Falls back to existing "star" key if no typed stars found."""
+    if not os.path.isdir(_ASSET_DIR):
+        return
+    pattern = re.compile(r'^star(\d+)_(\d+)\.png$')
+    typed: dict[int, list[tuple[int, str]]] = {}  # type_num → [(frame_num, filename)]
+    for fn in os.listdir(_ASSET_DIR):
+        m = pattern.match(fn)
+        if m:
+            type_num, frame_num = int(m.group(1)), int(m.group(2))
+            typed.setdefault(type_num, []).append((frame_num, fn))
+    for type_num in sorted(typed):
+        frames = [fn for _, fn in sorted(typed[type_num])]
+        key = f"star{type_num}"
+        _SPRITE_FILES[key] = frames
+
+# Number of distinct star types available (set after init_sprites)
+_star_type_count = 0
+_star_type_keys: list[str] = []
+
+
+def star_sprite_key(row: int, col: int) -> str:
+    """Return the sprite key for a star at grid position (row, col).
+    Uses a deterministic hash to assign different star types to different
+    positions, so each star looks distinct but stays consistent."""
+    if not _star_type_keys:
+        return "star"
+    return _star_type_keys[(row * 7 + col * 13) % len(_star_type_keys)]
+
+
 class SpriteCache:
     """Load sprites once, scale and cache per target size."""
 
@@ -135,6 +168,9 @@ class SpriteCache:
         self._load_all()
 
     def _load_all(self):
+        global _star_type_count, _star_type_keys
+        # Discover typed star sprites before loading
+        _discover_star_types()
         for key, filenames in _SPRITE_FILES.items():
             frames = []
             for fn in filenames:
@@ -144,6 +180,13 @@ class SpriteCache:
                     frames.append(surf)
             if frames:
                 self._originals[key] = frames
+        # Build star type list: typed stars (star1, star2, ...) + default star
+        _star_type_keys.clear()
+        _star_type_keys.extend(k for k in sorted(self._originals)
+                               if re.match(r'^star\d+$', k))
+        if not _star_type_keys and "star" in self._originals:
+            _star_type_keys.append("star")
+        _star_type_count = len(_star_type_keys)
 
     def get(self, key: str, width: int, height: int,
             frame: int = 0) -> pygame.Surface | None:

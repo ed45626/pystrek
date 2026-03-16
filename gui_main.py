@@ -21,6 +21,7 @@ from quadrant import EMPTY, STAR, KLINGON, SHIP, BASE
 from gui_assets import (
     COLORS, ENTITY_COLORS, CONDITION_COLORS, STATUS_STYLES,
     init_fonts, font, init_sprites, sprite, clear_sprite_cache,
+    star_sprite_key,
 )
 from gui_input import (
     nav_input, phaser_input, torpedo_input, shield_input,
@@ -195,8 +196,9 @@ def _draw_grid(surface, grid, lay):
             cx, cy = lay.cell_center(row, col)
             ent_rect = lay.entity_rect(key, cx, cy)
             # Idle animation: cycle frames for ship, stars, bases
-            frame = idle_frame(key, cycle_speed=15) if key in ("ship", "star", "base") else 0
-            spr = sprite(key, ent_rect.width, ent_rect.height, frame=frame)
+            spr_key = star_sprite_key(row, col) if key == "star" else key
+            frame = idle_frame(spr_key, cycle_speed=15) if key in ("ship", "star", "base") else 0
+            spr = sprite(spr_key, ent_rect.width, ent_rect.height, frame=frame)
             if spr is not None:
                 surface.blit(spr, ent_rect)
             elif key == "star":
@@ -641,17 +643,23 @@ def _build_com_lines(state):
                           _C["bright_cyan"]))
     lines.append(("", _C["bright_white"]))
 
-    # Cumulative galactic record
+    # Cumulative galactic record — highlight current quadrant
     lines.append(("--- CUMULATIVE GALACTIC RECORD ---", _C["bright_cyan"]))
+    lines.append(("  " + "  ".join(f" {c} " for c in range(1, 9)),
+                  _C["white"]))
     for r in range(1, 9):
         row_parts = []
         for c in range(1, 9):
             val = state.scanned_get(r, c)
-            if val > 0:
-                row_parts.append(f"{val:03d}")
+            cell = f"{val:03d}" if val > 0 else "***"
+            if r == state.quad_row and c == state.quad_col:
+                cell = f"[{cell}]"
             else:
-                row_parts.append("***")
-        lines.append(("  ".join(row_parts), _C["bright_cyan"]))
+                cell = f" {cell} "
+            row_parts.append(cell)
+        is_current_row = (r == state.quad_row)
+        color = _C["bright_yellow"] if is_current_row else _C["bright_cyan"]
+        lines.append((f"{r} " + " ".join(row_parts), color))
 
     return lines
 
@@ -760,67 +768,90 @@ def _check_time_expired(state, messages):
 # ---------------------------------------------------------------------------
 # Combat animation integration
 # ---------------------------------------------------------------------------
-def _animate_combat_events(events, state, messages, screen, clock, lay):
-    """Play combat animations based on event types."""
+def _snapshot_grid(grid):
+    """Shallow-copy a Quadrant grid so animations show pre-combat state."""
+    from quadrant import Quadrant
+    snap = Quadrant()
+    snap._grid = dict(grid._grid)
+    return snap
+
+
+def _animate_combat_events(events, state, messages, screen, clock, lay,
+                           grid_snapshot=None):
+    """Play combat animations based on event types.
+    grid_snapshot: pre-combat grid so destroyed entities still render
+    during beam/torpedo animations until their explosion plays."""
     ship_row, ship_col = state.sec_row, state.sec_col
+    go = grid_snapshot  # shorthand
 
     # Collect torpedo track sectors for batch animation
     torpedo_sectors = []
-    torpedo_playing = False
 
     for ev in events:
         if isinstance(ev, PhaserFired):
-            # Animate phasor beam to each klingon that gets hit after this
             pass  # beam drawn per KlingonHit below
 
         elif isinstance(ev, KlingonHit):
             play_phasor_hit(screen, clock, lay, state, messages,
                             ship_row, ship_col,
-                            ev.sector[0], ev.sector[1], fps=FPS)
+                            ev.sector[0], ev.sector[1], fps=FPS,
+                            grid_override=go)
+            # If klingon survived, no need to update snapshot
+            # If destroyed, the next KlingonDestroyed event handles it
 
         elif isinstance(ev, KlingonDestroyed):
             # Flush torpedo track if torpedo killed this klingon
             if torpedo_sectors:
                 play_torpedo_track(screen, clock, lay, state, messages,
-                                   torpedo_sectors, fps=FPS)
+                                   torpedo_sectors, fps=FPS,
+                                   grid_override=go)
                 torpedo_sectors = []
-                torpedo_playing = False
+            # Explosion plays over the klingon (still in snapshot)
             play_explosion(screen, clock, lay, state, messages,
-                           ev.sector[0], ev.sector[1], fps=FPS)
+                           ev.sector[0], ev.sector[1], fps=FPS,
+                           grid_override=go)
+            # Now remove from snapshot so subsequent animations don't show it
+            if go is not None:
+                go.clear(ev.sector[0], ev.sector[1])
 
         elif isinstance(ev, TorpedoFired):
             torpedo_sectors = []
-            torpedo_playing = True
 
         elif isinstance(ev, TorpedoTracked):
             torpedo_sectors.append(ev.sector)
 
         elif isinstance(ev, (TorpedoMissed, TorpedoAbsorbedByStar,
                              StarbaseDestroyed)):
-            # Play accumulated torpedo track, then any terminal effect
             if torpedo_sectors:
                 play_torpedo_track(screen, clock, lay, state, messages,
-                                   torpedo_sectors, fps=FPS)
+                                   torpedo_sectors, fps=FPS,
+                                   grid_override=go)
                 torpedo_sectors = []
-            torpedo_playing = False
             if isinstance(ev, StarbaseDestroyed):
                 play_explosion(screen, clock, lay, state, messages,
-                               ev.sector[0], ev.sector[1], fps=FPS)
+                               ev.sector[0], ev.sector[1], fps=FPS,
+                               grid_override=go)
+                if go is not None:
+                    go.clear(ev.sector[0], ev.sector[1])
 
         elif isinstance(ev, KlingonFired):
             play_klingon_fires(screen, clock, lay, state, messages,
                                ev.from_sector[0], ev.from_sector[1],
-                               ship_row, ship_col, fps=FPS)
-            play_enterprise_hit(screen, clock, lay, state, messages, fps=FPS)
+                               ship_row, ship_col, fps=FPS,
+                               grid_override=go)
+            play_enterprise_hit(screen, clock, lay, state, messages, fps=FPS,
+                                grid_override=go)
 
         elif isinstance(ev, EnterpriseDestroyed):
             play_explosion(screen, clock, lay, state, messages,
-                           ship_row, ship_col, fps=FPS)
+                           ship_row, ship_col, fps=FPS,
+                           grid_override=go)
 
     # Flush any remaining torpedo sectors
     if torpedo_sectors:
         play_torpedo_track(screen, clock, lay, state, messages,
-                           torpedo_sectors, fps=FPS)
+                           torpedo_sectors, fps=FPS,
+                           grid_override=go)
 
 
 # ---------------------------------------------------------------------------
@@ -848,11 +879,13 @@ def _do_command(cmd_index, state, messages, screen, clock, lay):
             return "destroyed"
         # Handle fire_first after quadrant entry
         if state.fire_first:
+            fire_snap = _snapshot_grid(state.quadrant_grid)
             fire_evts = [KlingonsAmbush()] + execute_klingons_fire(state)
             state.fire_first = False
             _render_events(fire_evts, messages)
             _animate_combat_events(fire_evts, state, messages,
-                                   screen, clock, lay)
+                                   screen, clock, lay,
+                                   grid_snapshot=fire_snap)
             if is_fatal(fire_evts):
                 return "destroyed"
         if _check_stranded(state, messages):
@@ -864,9 +897,11 @@ def _do_command(cmd_index, state, messages, screen, clock, lay):
         energy = phaser_input(screen, clock, state.energy, fps=FPS)
         if energy is None:
             return "ok"
+        grid_snap = _snapshot_grid(state.quadrant_grid)
         events = execute_phasers(state, PhaserCommand(energy=energy))
         _render_events(events, messages)
-        _animate_combat_events(events, state, messages, screen, clock, lay)
+        _animate_combat_events(events, state, messages, screen, clock, lay,
+                               grid_snapshot=grid_snap)
         if is_victory(events):
             return "victory"
         if is_fatal(events):
@@ -876,9 +911,11 @@ def _do_command(cmd_index, state, messages, screen, clock, lay):
         course = torpedo_input(screen, clock, fps=FPS)
         if course is None:
             return "ok"
+        grid_snap = _snapshot_grid(state.quadrant_grid)
         events = execute_torpedo(state, TorpedoCommand(course=course))
         _render_events(events, messages)
-        _animate_combat_events(events, state, messages, screen, clock, lay)
+        _animate_combat_events(events, state, messages, screen, clock, lay,
+                               grid_snapshot=grid_snap)
         if is_victory(events):
             return "victory"
         if is_fatal(events):

@@ -28,57 +28,54 @@ def idle_frame(key, cycle_speed=20):
 
 
 # ---------------------------------------------------------------------------
-# Blocking combat animation helpers
+# Scene redraw helper (used by all animation functions)
 # ---------------------------------------------------------------------------
-def _anim_loop(screen, clock, lay, state, messages, draw_fn,
-               sprite_key, row, col, duration_frames, fps,
-               size_mult=1.0):
-    """Run a short blocking animation at grid cell (row, col).
-
-    draw_fn(surface, state, messages, lay, hover_btn)
-      — redraws the full scene underneath the animation.
-    """
+def _redraw_scene(screen, state, messages, lay, grid_override=None):
+    """Redraw the full game scene. If grid_override is provided, use it
+    instead of state.quadrant_grid so entities destroyed during combat
+    still appear during animations."""
     from gui_main import (
         _draw_title_bar, _draw_grid, _draw_status_panel,
         _draw_command_bar, _draw_message_log,
     )
+    screen.fill(COLORS["black"])
+    _draw_title_bar(screen, state, lay)
+    grid = grid_override if grid_override is not None else state.quadrant_grid
+    _draw_grid(screen, grid, lay)
+    _draw_status_panel(screen, state, lay)
+    _draw_command_bar(screen, lay)
+    _draw_message_log(screen, messages, lay)
 
-    total_frames_available = 1  # default
-    # Probe how many frames exist for this sprite key
-    for n in range(10):
-        if sprite(sprite_key, 10, 10, frame=n) is None:
-            break
-        # If frame n is same surface as frame 0 for n > num_real_frames,
-        # sprite() wraps via modulo so they'll always succeed.
-        # We rely on _SPRITE_FILES frame counts.
+
+# ---------------------------------------------------------------------------
+# Blocking combat animation helpers
+# ---------------------------------------------------------------------------
+def _pump_events():
+    """Drain event queue, handling quit. Returns False if quit requested."""
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            raise SystemExit
+    return True
+
+
+def play_explosion(screen, clock, lay, state, messages, row, col, fps=30,
+                   grid_override=None):
+    """Play explosion animation at (row, col) — used for KlingonDestroyed."""
     from gui_assets import _SPRITE_FILES
-    total_frames_available = len(_SPRITE_FILES.get(sprite_key, [1]))
-
-    frames_per_sprite = max(1, duration_frames // total_frames_available)
+    total_frames = len(_SPRITE_FILES.get("explosion", [1]))
+    duration_frames = 25
+    frames_per_sprite = max(1, duration_frames // total_frames)
 
     cx, cy = lay.cell_center(row, col)
-    base_w, base_h = int(64 * lay.scale * size_mult), int(64 * lay.scale * size_mult)
+    base_size = int(64 * lay.scale * 1.2)
 
     for i in range(duration_frames):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                raise SystemExit
-            elif event.type == pygame.VIDEORESIZE:
-                screen = pygame.display.set_mode(
-                    (event.w, event.h), pygame.RESIZABLE)
+        _pump_events()
+        _redraw_scene(screen, state, messages, lay, grid_override)
 
-        # Redraw scene underneath
-        screen.fill(COLORS["black"])
-        _draw_title_bar(screen, state, lay)
-        _draw_grid(screen, state.quadrant_grid, lay)
-        _draw_status_panel(screen, state, lay)
-        _draw_command_bar(screen, lay)
-        _draw_message_log(screen, messages, lay)
-
-        # Draw animation sprite on top
         frame_idx = i // frames_per_sprite
-        spr = sprite(sprite_key, base_w, base_h, frame=frame_idx)
+        spr = sprite("explosion", base_size, base_size, frame=frame_idx)
         if spr is not None:
             rect = spr.get_rect(center=(cx, cy))
             screen.blit(spr, rect)
@@ -87,38 +84,18 @@ def _anim_loop(screen, clock, lay, state, messages, draw_fn,
         clock.tick(fps)
 
 
-def play_explosion(screen, clock, lay, state, messages, row, col, fps=30):
-    """Play explosion animation at (row, col) — used for KlingonDestroyed."""
-    _anim_loop(screen, clock, lay, state, messages, None,
-               "explosion", row, col,
-               duration_frames=25, fps=fps, size_mult=1.2)
-
-
 def play_phasor_hit(screen, clock, lay, state, messages,
-                    from_row, from_col, to_row, to_col, fps=30):
+                    from_row, from_col, to_row, to_col, fps=30,
+                    grid_override=None):
     """Animate a phasor beam from Enterprise to target Klingon."""
-    from gui_main import (
-        _draw_title_bar, _draw_grid, _draw_status_panel,
-        _draw_command_bar, _draw_message_log,
-    )
-
     sx, sy = lay.cell_center(from_row, from_col)
     ex, ey = lay.cell_center(to_row, to_col)
     beam_frames = 18
     beam_w = max(4, int(6 * lay.scale))
 
     for i in range(beam_frames):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                raise SystemExit
-
-        screen.fill(COLORS["black"])
-        _draw_title_bar(screen, state, lay)
-        _draw_grid(screen, state.quadrant_grid, lay)
-        _draw_status_panel(screen, state, lay)
-        _draw_command_bar(screen, lay)
-        _draw_message_log(screen, messages, lay)
+        _pump_events()
+        _redraw_scene(screen, state, messages, lay, grid_override)
 
         # Draw phasor beam — grows from source to target
         progress = min(1.0, (i + 1) / (beam_frames * 0.6))
@@ -145,12 +122,8 @@ def play_phasor_hit(screen, clock, lay, state, messages,
 
 
 def play_torpedo_track(screen, clock, lay, state, messages,
-                       sectors, fps=30):
+                       sectors, fps=30, grid_override=None):
     """Animate a photon torpedo moving through a list of (row, col) sectors."""
-    from gui_main import (
-        _draw_title_bar, _draw_grid, _draw_status_panel,
-        _draw_command_bar, _draw_message_log,
-    )
     if not sectors:
         return
 
@@ -160,17 +133,8 @@ def play_torpedo_track(screen, clock, lay, state, messages,
     for si, (row, col) in enumerate(sectors):
         cx, cy = lay.cell_center(row, col)
         for f in range(frames_per_sector):
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    raise SystemExit
-
-            screen.fill(COLORS["black"])
-            _draw_title_bar(screen, state, lay)
-            _draw_grid(screen, state.quadrant_grid, lay)
-            _draw_status_panel(screen, state, lay)
-            _draw_command_bar(screen, lay)
-            _draw_message_log(screen, messages, lay)
+            _pump_events()
+            _redraw_scene(screen, state, messages, lay, grid_override)
 
             # Draw torpedo sprite
             frame_idx = (si * frames_per_sector + f) // 3
@@ -188,35 +152,22 @@ def play_torpedo_track(screen, clock, lay, state, messages,
 
 
 def play_klingon_fires(screen, clock, lay, state, messages,
-                       from_row, from_col, to_row, to_col, fps=30):
+                       from_row, from_col, to_row, to_col, fps=30,
+                       grid_override=None):
     """Animate enemy fire from Klingon to Enterprise (green beam)."""
-    from gui_main import (
-        _draw_title_bar, _draw_grid, _draw_status_panel,
-        _draw_command_bar, _draw_message_log,
-    )
-
     sx, sy = lay.cell_center(from_row, from_col)
     ex, ey = lay.cell_center(to_row, to_col)
     beam_frames = 14
     beam_w = max(3, int(5 * lay.scale))
 
     for i in range(beam_frames):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                raise SystemExit
-
-        screen.fill(COLORS["black"])
-        _draw_title_bar(screen, state, lay)
-        _draw_grid(screen, state.quadrant_grid, lay)
-        _draw_status_panel(screen, state, lay)
-        _draw_command_bar(screen, lay)
-        _draw_message_log(screen, messages, lay)
+        _pump_events()
+        _redraw_scene(screen, state, messages, lay, grid_override)
 
         progress = min(1.0, (i + 1) / (beam_frames * 0.6))
         bx = int(sx + (ex - sx) * progress)
         by = int(sy + (ey - sy) * progress)
-        # Green/red beam for enemy fire
+        # Red/orange beam for enemy fire
         intensity = 180 + int(75 * (1 - (i / beam_frames)))
         beam_color = (min(255, intensity), 80, 60)
         pygame.draw.line(screen, beam_color, (sx, sy), (bx, by), beam_w)
@@ -228,25 +179,12 @@ def play_klingon_fires(screen, clock, lay, state, messages,
         clock.tick(fps)
 
 
-def play_enterprise_hit(screen, clock, lay, state, messages, fps=30):
+def play_enterprise_hit(screen, clock, lay, state, messages, fps=30,
+                        grid_override=None):
     """Flash the screen briefly when Enterprise is hit."""
-    from gui_main import (
-        _draw_title_bar, _draw_grid, _draw_status_panel,
-        _draw_command_bar, _draw_message_log,
-    )
-
     for i in range(6):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                raise SystemExit
-
-        screen.fill(COLORS["black"])
-        _draw_title_bar(screen, state, lay)
-        _draw_grid(screen, state.quadrant_grid, lay)
-        _draw_status_panel(screen, state, lay)
-        _draw_command_bar(screen, lay)
-        _draw_message_log(screen, messages, lay)
+        _pump_events()
+        _redraw_scene(screen, state, messages, lay, grid_override)
 
         # Red flash overlay on odd frames
         if i % 2 == 0:
