@@ -232,7 +232,7 @@ def _enterprise_target_angle(grid, ship_row, ship_col):
     tr, tc = best_target
     dx = tc - ship_col   # positive = east
     dy = ship_row - tr    # positive = north (row decreases upward)
-    return math.degrees(math.atan2(dy, dx))
+    return math.degrees(math.atan2(dy, dx)) % 360
 
 
 def _lock_heading(frames=30):
@@ -256,8 +256,6 @@ def _update_ship_rotation(grid):
             new_target = _enterprise_target_angle(
                 grid, ship_pos[0][0], ship_pos[0][1])
             if new_target is not None:
-                if abs(_angle_diff(_ship_target_angle, new_target)) > 5:
-                    print(f"[DEBUG _update_rotation] target changed: {_ship_target_angle:.1f} -> {new_target:.1f} (current={_ship_current_angle:.1f})")
                 _ship_target_angle = new_target
             # else: keep _ship_target_angle as-is (preserve heading)
 
@@ -1136,7 +1134,6 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
     during beam/torpedo animations until their explosion plays."""
     ship_row, ship_col = state.sec_row, state.sec_col
     go = grid_snapshot  # shorthand
-    print(f"[DEBUG _animate_combat] START: _ship_current_angle={_ship_current_angle:.1f} _ship_target_angle={_ship_target_angle:.1f} lock={_heading_lock_frames}")
 
     # Collect torpedo track sectors for batch animation
     torpedo_sectors = []
@@ -1226,7 +1223,6 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
             torpedo_sectors = []
             # Convert SST course to angle: course 1=E(0°), 2=NE(45°), etc.
             torpedo_angle = (ev.course - 1) * 45.0
-            print(f"[DEBUG TorpedoFired] course={ev.course} torpedo_angle={torpedo_angle:.1f} _ship_current_angle={_ship_current_angle:.1f}")
             # Rotate ship to torpedo direction using the course angle
             _rotate_to_angle(torpedo_angle)
 
@@ -1308,7 +1304,6 @@ def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
             _ship_current_angle = move_angle
             _ship_target_angle = move_angle
         _lock_heading(30)  # ~1s at 30fps before rotating to enemy
-        print(f"[DEBUG _execute_nav] After move: current={_ship_current_angle:.1f} target={_ship_target_angle:.1f} lock={_heading_lock_frames}")
 
     return events
 
@@ -1605,4 +1600,14 @@ def main():
 
 
 if __name__ == "__main__":
+    # Prevent the classic Python dual-module problem: when this file is run
+    # directly, Python loads it as '__main__'.  But 'import gui_main' (used in
+    # gui_anim.py and inside _rotate_to_angle) creates a SECOND copy of the
+    # module with its own separate globals.  That means _ship_current_angle
+    # in the __main__ copy (updated by the main loop) diverges from the
+    # gui_main copy (read by animations), causing the ship sprite to snap
+    # back to a stale angle when firing.  Registering __main__ under the
+    # 'gui_main' key unifies both references.
+    import sys as _sys
+    _sys.modules["gui_main"] = _sys.modules[__name__]
     main()
