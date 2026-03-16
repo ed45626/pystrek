@@ -1257,6 +1257,7 @@ def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
     _render_events(events, messages)
 
     # Find ShipMoved events and animate them
+    moved = False
     for ev in events:
         if isinstance(ev, ShipMoved):
             fr, fc = ev.from_sector
@@ -1264,9 +1265,18 @@ def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
             # Smooth slide (rotation set inside play_ship_move)
             play_ship_move(screen, clock, lay, state, messages,
                            fr, fc, tr, tc, fps=FPS)
+            moved = True
 
-    # Lock heading so travel direction persists briefly, then smooth rotate
-    _lock_heading(20)  # ~0.7s at 30fps before rotating to enemy
+    # Explicitly set both angles to travel direction and lock heading
+    if moved:
+        # Recalculate move angle to be safe (play_ship_move sets it too)
+        dx = state.sec_col - old_col
+        dy = old_row - state.sec_row
+        if dx != 0 or dy != 0:
+            move_angle = math.degrees(math.atan2(dy, dx)) % 360
+            _ship_current_angle = move_angle
+            _ship_target_angle = move_angle
+        _lock_heading(30)  # ~1s at 30fps before rotating to enemy
 
     return events
 
