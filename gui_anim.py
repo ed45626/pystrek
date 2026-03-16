@@ -279,47 +279,43 @@ def play_phasor_hit(screen, clock, lay, state, messages,
 
 def play_torpedo_track(screen, clock, lay, state, messages,
                        sectors, fps=30, grid_override=None):
-    """Animate a photon torpedo moving smoothly through sector cells.
-    Interpolates between cell centers for fluid movement."""
+    """Animate a photon torpedo moving in a straight line from the Enterprise
+    to the final tracked sector. Uses a single line interpolation to avoid
+    zigzag artifacts from cell-center waypoints."""
     if not sectors:
         return
 
     import gui_main as _gm
 
     spr_size = int(36 * lay.scale)
-    # Build list of waypoints (pixel coordinates)
-    # Start from the Enterprise position
+    # Straight line from Enterprise to final sector
     ship_x, ship_y = lay.cell_center(state.sec_row, state.sec_col)
-    waypoints = [(ship_x, ship_y)]
-    for row, col in sectors:
-        waypoints.append(lay.cell_center(row, col))
+    final_row, final_col = sectors[-1]
+    end_x, end_y = lay.cell_center(final_row, final_col)
 
+    # Total frames proportional to number of sectors traversed
     frames_per_segment = 4
-    total_frame = 0
+    total_frames = len(sectors) * frames_per_segment
 
-    for seg in range(len(waypoints) - 1):
-        sx, sy = waypoints[seg]
-        ex, ey = waypoints[seg + 1]
-        for f in range(frames_per_segment):
-            _pump_events()
-            _redraw_scene(screen, state, messages, lay, grid_override)
+    for i in range(total_frames):
+        _pump_events()
+        _redraw_scene(screen, state, messages, lay, grid_override)
 
-            t = (f + 1) / frames_per_segment
-            px = int(sx + (ex - sx) * t)
-            py = int(sy + (ey - sy) * t)
+        t = (i + 1) / total_frames
+        px = int(ship_x + (end_x - ship_x) * t)
+        py = int(ship_y + (end_y - ship_y) * t)
 
-            frame_idx = total_frame // 3
-            spr = sprite("photon", spr_size, spr_size, frame=frame_idx)
-            if spr is not None:
-                rect = spr.get_rect(center=(px, py))
-                screen.blit(spr, rect)
-            else:
-                pygame.draw.circle(screen, COLORS["bright_red"],
-                                   (px, py), max(4, int(8 * lay.scale)))
+        frame_idx = i // 3
+        spr = sprite("photon", spr_size, spr_size, frame=frame_idx)
+        if spr is not None:
+            rect = spr.get_rect(center=(px, py))
+            screen.blit(spr, rect)
+        else:
+            pygame.draw.circle(screen, COLORS["bright_red"],
+                               (px, py), max(4, int(8 * lay.scale)))
 
-            pygame.display.flip()
-            clock.tick(fps)
-            total_frame += 1
+        pygame.display.flip()
+        clock.tick(fps)
 
 
 def play_klingon_fires(screen, clock, lay, state, messages,

@@ -189,6 +189,7 @@ class Layout:
 _ship_current_angle = 0.0   # smoothly interpolated display angle
 _ship_target_angle = 0.0    # desired angle toward threat
 _ROTATION_SPEED = 4.0       # degrees per frame of lerp
+_heading_lock_frames = 0    # when >0, _update_ship_rotation won't change target
 
 
 def _angle_diff(a, b):
@@ -234,18 +235,29 @@ def _enterprise_target_angle(grid, ship_row, ship_col):
     return math.degrees(math.atan2(dy, dx))
 
 
+def _lock_heading(frames=30):
+    """Lock current heading for N frames so post-action direction persists
+    before smoothly transitioning to a new target."""
+    global _heading_lock_frames
+    _heading_lock_frames = frames
+
+
 def _update_ship_rotation(grid):
     """Advance smooth rotation one step toward target. Call once per frame.
-    If no target exists, preserves current heading."""
-    global _ship_current_angle, _ship_target_angle
+    If no target exists, preserves current heading.
+    If heading is locked, count down before allowing target changes."""
+    global _ship_current_angle, _ship_target_angle, _heading_lock_frames
 
-    ship_pos = grid.find(SHIP)
-    if ship_pos:
-        new_target = _enterprise_target_angle(
-            grid, ship_pos[0][0], ship_pos[0][1])
-        if new_target is not None:
-            _ship_target_angle = new_target
-        # else: keep _ship_target_angle as-is (preserve heading)
+    if _heading_lock_frames > 0:
+        _heading_lock_frames -= 1
+    else:
+        ship_pos = grid.find(SHIP)
+        if ship_pos:
+            new_target = _enterprise_target_angle(
+                grid, ship_pos[0][0], ship_pos[0][1])
+            if new_target is not None:
+                _ship_target_angle = new_target
+            # else: keep _ship_target_angle as-is (preserve heading)
 
     diff = _angle_diff(_ship_current_angle, _ship_target_angle)
     if abs(diff) < _ROTATION_SPEED:
@@ -1226,13 +1238,18 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
                            torpedo_sectors, fps=FPS,
                            grid_override=go)
 
+    # Lock heading so ship stays pointing at last combat direction briefly
+    _lock_heading(20)
+
 
 # ---------------------------------------------------------------------------
 # Navigation animation
 # ---------------------------------------------------------------------------
 def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
     """Execute navigation with smooth animation. Returns event list.
-    Rotates ship toward destination BEFORE executing nav, then slides."""
+    Rotates ship toward destination BEFORE executing nav, then slides.
+    Locks heading briefly after arrival so ship stays pointed in travel
+    direction before smoothly rotating to any enemy."""
     global _ship_current_angle, _ship_target_angle
 
     old_row, old_col = state.sec_row, state.sec_col
@@ -1247,6 +1264,9 @@ def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
             # Smooth slide (rotation set inside play_ship_move)
             play_ship_move(screen, clock, lay, state, messages,
                            fr, fc, tr, tc, fps=FPS)
+
+    # Lock heading so travel direction persists briefly, then smooth rotate
+    _lock_heading(20)  # ~0.7s at 30fps before rotating to enemy
 
     return events
 
