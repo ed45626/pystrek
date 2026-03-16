@@ -24,7 +24,7 @@ from gui_assets import (
     star_sprite_key,
 )
 from gui_input import (
-    nav_input, phaser_input, torpedo_input, shield_input,
+    numeric_input, nav_input, phaser_input, torpedo_input, shield_input,
     info_overlay, confirm_dialog,
 )
 from commands import NavCommand, PhaserCommand, TorpedoCommand, ShieldsCommand
@@ -168,6 +168,17 @@ class Layout:
             if rect.collidepoint(mx, my):
                 return i
         return -1
+
+    def hit_cell(self, mx, my):
+        """Return (row, col) 1-indexed if mouse is inside the grid, else None."""
+        if not (self.grid_x <= mx < self.grid_x + self.grid and
+                self.grid_y <= my < self.grid_y + self.grid):
+            return None
+        col = (mx - self.grid_x) // self.cell + 1
+        row = (my - self.grid_y) // self.cell + 1
+        if 1 <= row <= 8 and 1 <= col <= 8:
+            return (row, col)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +347,7 @@ def _draw_title_bar(surface, state, lay):
                       (lay.grid_y - 4) // 2 - ct.get_height() // 2))
 
 
-def _draw_hover_info(surface, grid, mx, my, lay):
+def _draw_hover_info(surface, grid, mx, my, lay, state=None):
     if not (lay.grid_x <= mx < lay.grid_x + lay.grid and
             lay.grid_y <= my < lay.grid_y + lay.grid):
         return
@@ -349,6 +360,19 @@ def _draw_hover_info(surface, grid, mx, my, lay):
     names = {"ship": "USS Enterprise", "klingon": "Klingon Warship",
              "base": "Starbase", "star": "Star", "empty": "Empty Space"}
     text = f"{names.get(key, '?')}  [{row},{col}]"
+
+    # Add distance/direction and action hint for non-ship entities
+    if state is not None and key != "ship":
+        result = calc_direction_distance(
+            state.sec_row, state.sec_col, row, col)
+        if result[0] is not None:
+            course, _, adist = result
+            text += f"  D={course:.1f} R={adist:.1f}"
+        if key == "klingon":
+            text += "  [Click=Torpedo  Shift=Phaser]"
+        elif key in ("empty", "base"):
+            text += "  [Click=Navigate]"
+
     tip_font = font(lay.font_tip)
     txt_surf = tip_font.render(text, True, COLORS["bright_white"])
     tw, th = txt_surf.get_size()
@@ -766,6 +790,157 @@ def _check_time_expired(state, messages):
 
 
 # ---------------------------------------------------------------------------
+# Grid-click actions  (Phase 6: mouse interaction)
+# ---------------------------------------------------------------------------
+def _handle_grid_click(row, col, state, messages, screen, clock, lay,
+                       shift=False):
+    """Handle a left-click on grid cell (row, col).
+    Returns "ok", "victory", or "destroyed"."""
+    token = state.quadrant_grid.get(row, col)
+    key = _token_key(token)
+
+    if key == "klingon":
+        if shift:
+            # Shift+click → fire phasers
+            if not state.is_device_ok(DEV_COMPUTER):
+                messages.append(("COMPUTER DISABLED — PHASERS CANNOT LOCK",
+                                 _C["bright_red"]))
+                return "ok"
+            klingons = state.alive_klingons()
+            if not klingons:
+                return "ok"
+            energy = state.energy // len(klingons)
+            if energy < 1:
+                messages.append(("INSUFFICIENT ENERGY FOR PHASERS",
+                                 _C["bright_red"]))
+                return "ok"
+            grid_snap = _snapshot_grid(state.quadrant_grid)
+            events = execute_phasers(state, PhaserCommand(energy=energy))
+            _render_events(events, messages)
+            _animate_combat_events(events, state, messages, screen, clock,
+                                   lay, grid_snapshot=grid_snap)
+            if is_victory(events):
+                return "victory"
+            if is_fatal(events):
+                return "destroyed"
+        else:
+            # Click → fire torpedo at Klingon
+            if state.torpedoes <= 0:
+                messages.append(("ALL PHOTON TORPEDOES EXPENDED",
+                                 _C["bright_red"]))
+                return "ok"
+            result = calc_direction_distance(
+                state.sec_row, state.sec_col, row, col)
+            if result[0] is None:
+                return "ok"
+            course = result[0]
+            messages.append((f"TORPEDO LOCKED ON [{row},{col}]  COURSE {course:.2f}",
+                             _C["bright_cyan"]))
+            grid_snap = _snapshot_grid(state.quadrant_grid)
+            events = execute_torpedo(state, TorpedoCommand(course=course))
+            _render_events(events, messages)
+            _animate_combat_events(events, state, messages, screen, clock,
+                                   lay, grid_snapshot=grid_snap)
+            if is_victory(events):
+                return "victory"
+            if is_fatal(events):
+                return "destroyed"
+
+    elif key == "empty":
+        # Click empty space → navigate
+        result = calc_direction_distance(
+            state.sec_row, state.sec_col, row, col)
+        if result[0] is None:
+            return "ok"
+        course = result[0]
+        dist = result[1]  # game_dist (Chebyshev sectors)
+        # Auto-calculate warp: sector distance / 8 (one quadrant = warp 1)
+        warp = min(dist / 8.0, 0.2) if dist <= 2 else 0.2
+        # Prompt for warp — pre-fill info in message
+        messages.append((f"COURSE {course:.2f} TO [{row},{col}]  — ENTER WARP FACTOR",
+                         _C["bright_cyan"]))
+        warp = numeric_input(screen, clock,
+                             f"WARP FACTOR (0-8) — course {course:.2f}:",
+                             bounds=(0, 8), fps=FPS)
+        if warp is None:
+            return "ok"
+        events = execute_nav(state, NavCommand(course=course, warp=warp))
+        _render_events(events, messages)
+        if is_victory(events):
+            return "victory"
+        if is_fatal(events):
+            return "destroyed"
+        if state.fire_first:
+            fire_snap = _snapshot_grid(state.quadrant_grid)
+            fire_evts = [KlingonsAmbush()] + execute_klingons_fire(state)
+            state.fire_first = False
+            _render_events(fire_evts, messages)
+            _animate_combat_events(fire_evts, state, messages,
+                                   screen, clock, lay,
+                                   grid_snapshot=fire_snap)
+            if is_fatal(fire_evts):
+                return "destroyed"
+        if _check_stranded(state, messages):
+            return "destroyed"
+        if _check_time_expired(state, messages):
+            return "destroyed"
+
+    elif key == "star":
+        messages.append((f"STAR AT SECTOR [{row},{col}] — NAVIGATION HAZARD",
+                         _C["bright_yellow"]))
+
+    elif key == "base":
+        result = calc_direction_distance(
+            state.sec_row, state.sec_col, row, col)
+        if result[0] is not None:
+            course, gdist, adist = result
+            messages.append((f"STARBASE AT [{row},{col}]: "
+                             f"DIRECTION={course:.2f}  DISTANCE={adist:.2f}",
+                             _C["bright_cyan"]))
+        # Navigate to dock
+        if result[0] is not None:
+            warp = numeric_input(screen, clock,
+                                 f"WARP TO STARBASE? (0-8) — course {course:.2f}:",
+                                 bounds=(0, 8), fps=FPS)
+            if warp is not None:
+                events = execute_nav(state, NavCommand(course=course, warp=warp))
+                _render_events(events, messages)
+                if is_victory(events):
+                    return "victory"
+                if is_fatal(events):
+                    return "destroyed"
+                if _check_stranded(state, messages):
+                    return "destroyed"
+                if _check_time_expired(state, messages):
+                    return "destroyed"
+
+    elif key == "ship":
+        messages.append(("THAT'S US, CAPTAIN.", _C["bright_cyan"]))
+
+    return "ok"
+
+
+def _handle_right_click(row, col, state, messages):
+    """Right-click on grid cell — show distance/direction info."""
+    token = state.quadrant_grid.get(row, col)
+    key = _token_key(token)
+    names = {"ship": "USS ENTERPRISE", "klingon": "KLINGON WARSHIP",
+             "base": "STARBASE", "star": "STAR", "empty": "EMPTY SPACE"}
+    name = names.get(key, "UNKNOWN")
+
+    result = calc_direction_distance(
+        state.sec_row, state.sec_col, row, col)
+    if result[0] is not None:
+        course, gdist, adist = result
+        messages.append((f"{name} AT [{row},{col}]: "
+                         f"DIRECTION={course:.2f}  DISTANCE={adist:.2f}",
+                         _C["bright_green"]))
+    else:
+        messages.append((f"{name} AT [{row},{col}]: YOUR POSITION",
+                         _C["bright_green"]))
+
+
+# ---------------------------------------------------------------------------
 # Combat animation integration
 # ---------------------------------------------------------------------------
 def _snapshot_grid(grid):
@@ -995,6 +1170,9 @@ def main():
         ("Hotkeys: N=Nav  P=Phaser  T=Torpedo  H=Shields  "
          "L=LRS  D=Damage  C=Computer  R=New Game  Esc=Quit",
          _C["bright_yellow"]),
+        ("Mouse: Click Klingon=Torpedo  Shift+Click=Phaser  "
+         "Click Empty=Navigate  Right-Click=Info",
+         _C["white"]),
     ]
 
     # Handle fire_first on initial entry (shouldn't fire, but be safe)
@@ -1059,12 +1237,30 @@ def main():
                     game_over = False
 
             elif (event.type == pygame.MOUSEBUTTONDOWN
-                  and event.button == 1 and not game_over):
-                btn = lay.hit_button(*event.pos)
-                if btn >= 0:
-                    result = _do_command(btn, state, messages, screen, clock, lay)
-                    if result in ("victory", "destroyed"):
-                        game_over = True
+                  and not game_over):
+                if event.button == 1:
+                    # Left click: button bar or grid cell
+                    btn = lay.hit_button(*event.pos)
+                    if btn >= 0:
+                        result = _do_command(btn, state, messages,
+                                             screen, clock, lay)
+                        if result in ("victory", "destroyed"):
+                            game_over = True
+                    else:
+                        cell = lay.hit_cell(*event.pos)
+                        if cell is not None:
+                            shift = (pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                            result = _handle_grid_click(
+                                cell[0], cell[1], state, messages,
+                                screen, clock, lay, shift=shift)
+                            if result in ("victory", "destroyed"):
+                                game_over = True
+                elif event.button == 3:
+                    # Right click: info on grid cell
+                    cell = lay.hit_cell(*event.pos)
+                    if cell is not None:
+                        _handle_right_click(cell[0], cell[1],
+                                            state, messages)
 
         # --- Draw ---
         screen.fill(COLORS["black"])
@@ -1074,7 +1270,22 @@ def main():
         _draw_command_bar(screen, lay, hover_btn)
         _draw_message_log(screen, messages, lay)
         if not game_over:
-            _draw_hover_info(screen, state.quadrant_grid, mx, my, lay)
+            # Highlight hovered grid cell
+            cell = lay.hit_cell(mx, my)
+            if cell is not None:
+                hr, hc = cell
+                hx = lay.grid_x + (hc - 1) * lay.cell
+                hy = lay.grid_y + (hr - 1) * lay.cell
+                highlight_rect = pygame.Rect(hx, hy, lay.cell, lay.cell)
+                token = state.quadrant_grid.get(hr, hc)
+                hkey = _token_key(token)
+                hcolor = ENTITY_COLORS.get(hkey) or COLORS["white"]
+                # Semi-transparent highlight
+                hl_surf = pygame.Surface((lay.cell, lay.cell), pygame.SRCALPHA)
+                hl_surf.fill((*hcolor[:3], 25))
+                screen.blit(hl_surf, (hx, hy))
+                pygame.draw.rect(screen, hcolor, highlight_rect, 2)
+            _draw_hover_info(screen, state.quadrant_grid, mx, my, lay, state)
 
         if game_over:
             # Dim overlay with "GAME OVER" / "VICTORY" text
