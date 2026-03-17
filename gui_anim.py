@@ -170,9 +170,72 @@ def play_ship_move(screen, clock, lay, state, messages,
         clock.tick(fps)
 
 
+def _draw_warp_streaks(surface, cx, cy, dx, dy, streak_len, intensity,
+                       scale, num_streaks=7):
+    """Draw Star Trek movie-style warp streaks — parallel light trails
+    stretching behind the ship opposite to its travel direction.
+
+    intensity: 0.0 (invisible) to 1.0 (full brightness)
+    streak_len: pixel length of the streaks
+    dx, dy: travel direction unit vector (screen coords)
+    """
+    import math
+    if streak_len < 2 or intensity <= 0:
+        return
+
+    streak_surf = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+
+    # Perpendicular vector for spreading streaks across the ship width
+    perp_x, perp_y = -dy, dx
+
+    spread = max(4, int(20 * scale))  # half-width of the streak fan
+
+    for s in range(num_streaks):
+        # Distribute streaks across the ship width
+        frac = (s / (num_streaks - 1)) - 0.5 if num_streaks > 1 else 0
+        offset_x = perp_x * spread * frac * 2
+        offset_y = perp_y * spread * frac * 2
+
+        # Centre streak is brightest, edges dimmer
+        centre_fade = 1.0 - abs(frac) * 1.2
+        if centre_fade <= 0:
+            continue
+        alpha = int(min(255, 255 * intensity * centre_fade))
+        if alpha <= 0:
+            continue
+
+        # Streak colour: centre is white-blue, edges are bluer
+        if abs(frac) < 0.2:
+            color = (220, 235, 255, alpha)
+        elif abs(frac) < 0.4:
+            color = (160, 200, 255, alpha)
+        else:
+            color = (100, 160, 255, alpha)
+
+        # Start at ship, extend backward (opposite travel direction)
+        sx = int(cx + offset_x)
+        sy = int(cy + offset_y)
+        ex = int(sx - dx * streak_len)
+        ey = int(sy - dy * streak_len)
+
+        width = max(1, int(2 * scale * centre_fade))
+        pygame.draw.line(streak_surf, color, (sx, sy), (ex, ey), width)
+
+    # Bright core streak (the main warp trail)
+    core_alpha = int(min(255, 255 * intensity))
+    core_ex = int(cx - dx * streak_len * 1.1)
+    core_ey = int(cy - dy * streak_len * 1.1)
+    pygame.draw.line(streak_surf, (230, 240, 255, core_alpha),
+                     (cx, cy), (core_ex, core_ey),
+                     max(1, int(3 * scale)))
+
+    surface.blit(streak_surf, (0, 0))
+
+
 def play_warp_out(screen, clock, lay, state, messages, travel_angle, fps=30):
-    """Animate the Enterprise zooming out (shrinking + moving in travel
-    direction) to simulate jumping to warp speed when leaving a quadrant."""
+    """Animate the Enterprise jumping to warp — Star Trek movie style.
+    Ship stays full-size while warp streaks grow behind it, then the ship
+    shoots forward and vanishes into a flash."""
     import math
     import gui_main as _gm
 
@@ -182,55 +245,69 @@ def play_warp_out(screen, clock, lay, state, messages, travel_angle, fps=30):
     ship_r, ship_c = state.sec_row, state.sec_col
     cx, cy = lay.cell_center(ship_r, ship_c)
 
-    # Direction vector for the travel angle
+    # Travel direction in screen coordinates
     dx = math.cos(math.radians(travel_angle))
-    dy = -math.sin(math.radians(travel_angle))  # screen y is inverted
+    dy = -math.sin(math.radians(travel_angle))  # screen y inverted
 
-    frames = 15
-    # How far the ship drifts off-screen during warp-out
-    drift = lay.cell * 3
+    max_streak = lay.cell * 5
+    drift = lay.cell * 4  # how far the ship shoots before vanishing
+    frames = 20
 
     for i in range(frames):
         _pump_events()
         t = (i + 1) / frames
-        t_ease = t * t  # ease-in (accelerate away)
-        scale = max(0.05, 1.0 - t_ease)
-        # Ship drifts in travel direction
-        px = int(cx + dx * drift * t_ease)
-        py = int(cy + dy * drift * t_ease)
 
         _redraw_scene(screen, state, messages, lay, hide_ship=True)
 
-        # Draw scaled ship sprite over the scene
-        base_rect = lay.entity_rect("ship", cx, cy)
-        w = max(2, int(base_rect.width * scale))
-        h = max(2, int(base_rect.height * scale))
-        spr = sprite("ship", w, h, angle=travel_angle)
-        if spr is not None:
-            spr_rect = spr.get_rect(center=(px, py))
-            screen.blit(spr, spr_rect)
+        if t < 0.55:
+            # Phase 1: Streaks build up, ship holds position
+            phase_t = t / 0.55
+            streak_len = int(max_streak * phase_t * phase_t)
+            intensity = phase_t
+            ship_x, ship_y = cx, cy
+            ship_alpha = 255
+        else:
+            # Phase 2: Ship shoots forward, streaks stretch and fade
+            phase_t = (t - 0.55) / 0.45
+            ease = phase_t * phase_t  # accelerate
+            streak_len = int(max_streak * (1.0 + ease * 2))
+            intensity = max(0, 1.0 - phase_t * 0.8)
+            ship_x = int(cx + dx * drift * ease)
+            ship_y = int(cy + dy * drift * ease)
+            ship_alpha = max(0, int(255 * (1.0 - phase_t)))
 
-        # Warp flash — growing white streak
-        if t > 0.3:
-            flash_alpha = min(180, int(255 * (t - 0.3) / 0.7))
-            streak_len = int(drift * t_ease * 1.5)
-            streak_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-            sx = int(cx + dx * drift * t_ease * 0.5)
-            sy = int(cy + dy * drift * t_ease * 0.5)
-            ex = int(cx + dx * streak_len)
-            ey = int(cy + dy * streak_len)
-            pygame.draw.line(streak_surf, (200, 220, 255, flash_alpha),
-                             (sx, sy), (ex, ey),
-                             max(1, int(4 * lay.scale * (1 - t))))
-            screen.blit(streak_surf, (0, 0))
+        # Draw warp streaks behind the ship
+        _draw_warp_streaks(screen, int(ship_x), int(ship_y), dx, dy,
+                           streak_len, intensity, lay.scale)
+
+        # Draw the ship at full size
+        if ship_alpha > 0:
+            base_rect = lay.entity_rect("ship", cx, cy)
+            spr = sprite("ship", base_rect.width, base_rect.height,
+                         angle=travel_angle)
+            if spr is not None:
+                if ship_alpha < 255:
+                    spr = spr.copy()  # don't mutate cached sprite
+                    spr.set_alpha(ship_alpha)
+                spr_rect = spr.get_rect(center=(int(ship_x), int(ship_y)))
+                screen.blit(spr, spr_rect)
+
+        # Bright warp flash at the end
+        if t > 0.85:
+            flash_t = (t - 0.85) / 0.15
+            flash_alpha = int(120 * (1.0 - flash_t))
+            flash_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            flash_surf.fill((200, 220, 255, flash_alpha))
+            screen.blit(flash_surf, (0, 0))
 
         pygame.display.flip()
         clock.tick(fps)
 
 
 def play_warp_in(screen, clock, lay, state, messages, travel_angle, fps=30):
-    """Animate the Enterprise zooming in (growing from a point) to simulate
-    arriving from warp speed when entering a new quadrant."""
+    """Animate the Enterprise dropping out of warp — Star Trek movie style.
+    Ship arrives from the travel direction with long streaks that shorten
+    and fade as it decelerates to a stop at its sector position."""
     import math
     import gui_main as _gm
 
@@ -240,45 +317,54 @@ def play_warp_in(screen, clock, lay, state, messages, travel_angle, fps=30):
     ship_r, ship_c = state.sec_row, state.sec_col
     cx, cy = lay.cell_center(ship_r, ship_c)
 
-    # Ship arrives FROM the travel direction (appears from behind)
+    # Travel direction in screen coordinates
     dx = math.cos(math.radians(travel_angle))
-    dy = -math.sin(math.radians(travel_angle))
+    dy = -math.sin(math.radians(travel_angle))  # screen y inverted
 
-    frames = 18
-    drift = lay.cell * 3
+    max_streak = lay.cell * 6
+    # Ship starts offset BEHIND its final position (opposite travel dir)
+    approach_dist = lay.cell * 3
+    frames = 22
 
     for i in range(frames):
         _pump_events()
         t = (i + 1) / frames
-        t_ease = 1.0 - (1.0 - t) * (1.0 - t)  # ease-out (decelerate in)
-        scale = max(0.05, t_ease)
-        # Ship approaches from the travel direction
-        offset = drift * (1.0 - t_ease)
-        px = int(cx - dx * offset)
-        py = int(cy + dy * offset)
 
         _redraw_scene(screen, state, messages, lay, hide_ship=True)
 
-        # Draw scaled ship sprite
-        base_rect = lay.entity_rect("ship", cx, cy)
-        w = max(2, int(base_rect.width * scale))
-        h = max(2, int(base_rect.height * scale))
-        spr = sprite("ship", w, h, angle=travel_angle)
-        if spr is not None:
-            spr_rect = spr.get_rect(center=(px, py))
-            screen.blit(spr, spr_rect)
+        if t < 0.15:
+            # Phase 1: Initial flash — ship arriving from warp
+            flash_t = t / 0.15
+            flash_alpha = int(100 * (1.0 - flash_t))
+            flash_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            flash_surf.fill((200, 220, 255, flash_alpha))
+            screen.blit(flash_surf, (0, 0))
+            # Ship overshoots slightly then settles
+            overshoot = approach_dist * (1.0 - flash_t)
+            ship_x = int(cx + dx * overshoot * 0.3)
+            ship_y = int(cy + dy * overshoot * 0.3)
+            streak_len = int(max_streak)
+            intensity = 1.0
+        else:
+            # Phase 2: Streaks shorten and fade as ship decelerates
+            phase_t = (t - 0.15) / 0.85
+            ease = 1.0 - (1.0 - phase_t) * (1.0 - phase_t)  # ease-out
+            ship_x = int(cx + dx * approach_dist * 0.3 * (1.0 - ease))
+            ship_y = int(cy + dy * approach_dist * 0.3 * (1.0 - ease))
+            streak_len = int(max_streak * (1.0 - ease * ease))
+            intensity = max(0, 1.0 - ease)
 
-        # Deceleration flash — fading white streak behind ship
-        if t < 0.6:
-            flash_alpha = min(180, int(255 * (1 - t / 0.6)))
-            streak_len = int(drift * (1.0 - t_ease) * 1.5)
-            streak_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-            sx = int(px - dx * streak_len)
-            sy = int(py + dy * streak_len)
-            pygame.draw.line(streak_surf, (200, 220, 255, flash_alpha),
-                             (px, py), (sx, sy),
-                             max(1, int(4 * lay.scale * (1 - t))))
-            screen.blit(streak_surf, (0, 0))
+        # Draw warp streaks behind the ship (opposite travel direction)
+        _draw_warp_streaks(screen, int(ship_x), int(ship_y), dx, dy,
+                           streak_len, intensity, lay.scale)
+
+        # Draw the ship at full size
+        base_rect = lay.entity_rect("ship", cx, cy)
+        spr = sprite("ship", base_rect.width, base_rect.height,
+                     angle=travel_angle)
+        if spr is not None:
+            spr_rect = spr.get_rect(center=(int(ship_x), int(ship_y)))
+            screen.blit(spr, spr_rect)
 
         pygame.display.flip()
         clock.tick(fps)
