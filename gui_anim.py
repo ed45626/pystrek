@@ -30,7 +30,8 @@ def idle_frame(key, cycle_speed=20):
 # ---------------------------------------------------------------------------
 # Scene redraw helper (used by all animation functions)
 # ---------------------------------------------------------------------------
-def _redraw_scene(screen, state, messages, lay, grid_override=None):
+def _redraw_scene(screen, state, messages, lay, grid_override=None,
+                  hide_ship=False):
     """Redraw the full game scene. If grid_override is provided, use it
     instead of state.quadrant_grid so entities destroyed during combat
     still appear during animations."""
@@ -41,7 +42,7 @@ def _redraw_scene(screen, state, messages, lay, grid_override=None):
     screen.fill(COLORS["black"])
     _draw_title_bar(screen, state, lay)
     grid = grid_override if grid_override is not None else state.quadrant_grid
-    _draw_grid(screen, grid, lay)
+    _draw_grid(screen, grid, lay, hide_ship=hide_ship)
     _draw_status_panel(screen, state, lay)
     _draw_command_bar(screen, lay)
     _draw_message_log(screen, messages, lay)
@@ -165,6 +166,120 @@ def play_ship_move(screen, clock, lay, state, messages,
         px = int(sx + (ex - sx) * t)
         py = int(sy + (ey - sy) * t)
         _draw_ship_at(px, py)
+        pygame.display.flip()
+        clock.tick(fps)
+
+
+def play_warp_out(screen, clock, lay, state, messages, travel_angle, fps=30):
+    """Animate the Enterprise zooming out (shrinking + moving in travel
+    direction) to simulate jumping to warp speed when leaving a quadrant."""
+    import math
+    import gui_main as _gm
+
+    _gm._ship_current_angle = travel_angle
+    _gm._ship_target_angle = travel_angle
+
+    ship_r, ship_c = state.sec_row, state.sec_col
+    cx, cy = lay.cell_center(ship_r, ship_c)
+
+    # Direction vector for the travel angle
+    dx = math.cos(math.radians(travel_angle))
+    dy = -math.sin(math.radians(travel_angle))  # screen y is inverted
+
+    frames = 15
+    # How far the ship drifts off-screen during warp-out
+    drift = lay.cell * 3
+
+    for i in range(frames):
+        _pump_events()
+        t = (i + 1) / frames
+        t_ease = t * t  # ease-in (accelerate away)
+        scale = max(0.05, 1.0 - t_ease)
+        # Ship drifts in travel direction
+        px = int(cx + dx * drift * t_ease)
+        py = int(cy + dy * drift * t_ease)
+
+        _redraw_scene(screen, state, messages, lay, hide_ship=True)
+
+        # Draw scaled ship sprite over the scene
+        base_rect = lay.entity_rect("ship", cx, cy)
+        w = max(2, int(base_rect.width * scale))
+        h = max(2, int(base_rect.height * scale))
+        spr = sprite("ship", w, h, angle=travel_angle)
+        if spr is not None:
+            spr_rect = spr.get_rect(center=(px, py))
+            screen.blit(spr, spr_rect)
+
+        # Warp flash — growing white streak
+        if t > 0.3:
+            flash_alpha = min(180, int(255 * (t - 0.3) / 0.7))
+            streak_len = int(drift * t_ease * 1.5)
+            streak_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            sx = int(cx + dx * drift * t_ease * 0.5)
+            sy = int(cy + dy * drift * t_ease * 0.5)
+            ex = int(cx + dx * streak_len)
+            ey = int(cy + dy * streak_len)
+            pygame.draw.line(streak_surf, (200, 220, 255, flash_alpha),
+                             (sx, sy), (ex, ey),
+                             max(1, int(4 * lay.scale * (1 - t))))
+            screen.blit(streak_surf, (0, 0))
+
+        pygame.display.flip()
+        clock.tick(fps)
+
+
+def play_warp_in(screen, clock, lay, state, messages, travel_angle, fps=30):
+    """Animate the Enterprise zooming in (growing from a point) to simulate
+    arriving from warp speed when entering a new quadrant."""
+    import math
+    import gui_main as _gm
+
+    _gm._ship_current_angle = travel_angle
+    _gm._ship_target_angle = travel_angle
+
+    ship_r, ship_c = state.sec_row, state.sec_col
+    cx, cy = lay.cell_center(ship_r, ship_c)
+
+    # Ship arrives FROM the travel direction (appears from behind)
+    dx = math.cos(math.radians(travel_angle))
+    dy = -math.sin(math.radians(travel_angle))
+
+    frames = 18
+    drift = lay.cell * 3
+
+    for i in range(frames):
+        _pump_events()
+        t = (i + 1) / frames
+        t_ease = 1.0 - (1.0 - t) * (1.0 - t)  # ease-out (decelerate in)
+        scale = max(0.05, t_ease)
+        # Ship approaches from the travel direction
+        offset = drift * (1.0 - t_ease)
+        px = int(cx - dx * offset)
+        py = int(cy + dy * offset)
+
+        _redraw_scene(screen, state, messages, lay, hide_ship=True)
+
+        # Draw scaled ship sprite
+        base_rect = lay.entity_rect("ship", cx, cy)
+        w = max(2, int(base_rect.width * scale))
+        h = max(2, int(base_rect.height * scale))
+        spr = sprite("ship", w, h, angle=travel_angle)
+        if spr is not None:
+            spr_rect = spr.get_rect(center=(px, py))
+            screen.blit(spr, spr_rect)
+
+        # Deceleration flash — fading white streak behind ship
+        if t < 0.6:
+            flash_alpha = min(180, int(255 * (1 - t / 0.6)))
+            streak_len = int(drift * (1.0 - t_ease) * 1.5)
+            streak_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+            sx = int(px - dx * streak_len)
+            sy = int(py + dy * streak_len)
+            pygame.draw.line(streak_surf, (200, 220, 255, flash_alpha),
+                             (px, py), (sx, sy),
+                             max(1, int(4 * lay.scale * (1 - t))))
+            screen.blit(streak_surf, (0, 0))
+
         pygame.display.flip()
         clock.tick(fps)
 

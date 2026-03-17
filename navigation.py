@@ -69,8 +69,15 @@ def _maneuver_energy(state, n: int, events: list) -> None:
     ))
 
 
-def _damage_tick(state, d6: float, events: list) -> None:
-    """Repair tick + 20% random event. BASIC lines 2770-3060."""
+def _damage_tick(state, d6: float, events: list,
+                 random_event: bool = False) -> None:
+    """Repair tick + optional random event. BASIC lines 2770-3060.
+
+    The repair portion runs every step so damaged devices gradually heal.
+    The random damage/improvement event only fires when *random_event* is
+    True — callers should pass True once per warp command for cross-quadrant
+    travel only, not for short in-sector hops.
+    """
     for i in range(8):
         if state.damage[i] < 0:
             state.damage[i] += d6
@@ -80,6 +87,8 @@ def _damage_tick(state, d6: float, events: list) -> None:
             if state.damage[i] >= 0:
                 events.append(DeviceRepaired(device_index=i, device_name=DEVICE_NAMES[i]))
 
+    if not random_event:
+        return
     if random.random() > 0.2:
         return
     dev = random.randint(0, 7)
@@ -280,7 +289,7 @@ def execute_nav(state, command: NavCommand) -> List[Event]:
         if pos_r < 1 or pos_r >= 9 or pos_c < 1 or pos_c >= 9:
             hit_edge = _cross_quadrant_boundary(
                 state, orig_r, orig_c, n, x1, x2, events)
-            _damage_tick(state, d6, events)
+            _damage_tick(state, d6, events, random_event=True)
             _maneuver_energy(state, n, events)
             state.stardate += 1
             if not hit_edge:

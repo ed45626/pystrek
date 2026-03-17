@@ -53,6 +53,7 @@ from display import calc_direction_distance
 from gui_anim import (
     advance_tick, idle_frame,
     rotate_ship_to, play_ship_move,
+    play_warp_out, play_warp_in,
     play_explosion, play_phasor_hit, play_torpedo_track,
     play_klingon_fires, play_enterprise_hit,
 )
@@ -1274,36 +1275,71 @@ def _animate_combat_events(events, state, messages, screen, clock, lay,
 # ---------------------------------------------------------------------------
 def _execute_nav_animated(state, course, warp, messages, screen, clock, lay):
     """Execute navigation with smooth animation. Returns event list.
-    Rotates ship toward destination BEFORE executing nav, then slides.
+    In-sector: rotates toward destination then slides.
+    Cross-quadrant: warp-out zoom, execute nav, warp-in zoom.
     Locks heading briefly after arrival so ship stays pointed in travel
     direction before smoothly rotating to any enemy."""
     global _ship_current_angle, _ship_target_angle
 
     old_row, old_col = state.sec_row, state.sec_col
+    old_qr, old_qc = state.quad_row, state.quad_col
+
+    # Calculate travel angle from course BEFORE executing nav
+    from navigation import _course_vector
+    x1, x2 = _course_vector(course)
+    # x1 = row delta (positive = south), x2 = col delta (positive = east)
+    # Convert to screen angle: east=0°, north=90°
+    travel_angle = math.degrees(math.atan2(-x1, x2)) % 360
+
+    # Snapshot old grid in case of cross-quadrant warp (for warp-out anim)
+    old_grid = _snapshot_grid(state.quadrant_grid)
+    old_ship_r, old_ship_c = state.sec_row, state.sec_col
+
     events = execute_nav(state, NavCommand(course=course, warp=warp))
+
+    # Check if quadrant changed (cross-quadrant warp)
+    crossed_quadrant = (state.quad_row != old_qr or state.quad_col != old_qc)
+
+    if crossed_quadrant:
+        # Warp-out: zoom the ship away from the OLD quadrant
+        # We temporarily swap the grid so _redraw_scene draws the old sector
+        real_grid = state.quadrant_grid
+        real_r, real_c = state.sec_row, state.sec_col
+        state.quadrant_grid = old_grid
+        state.sec_row, state.sec_col = old_ship_r, old_ship_c
+        play_warp_out(screen, clock, lay, state, messages,
+                      travel_angle, fps=FPS)
+        state.quadrant_grid = real_grid
+        state.sec_row, state.sec_col = real_r, real_c
+
     _render_events(events, messages)
 
-    # Find ShipMoved events and animate them
-    moved = False
-    for ev in events:
-        if isinstance(ev, ShipMoved):
-            fr, fc = ev.from_sector
-            tr, tc = ev.to_sector
-            # Smooth slide (rotation set inside play_ship_move)
-            play_ship_move(screen, clock, lay, state, messages,
-                           fr, fc, tr, tc, fps=FPS)
-            moved = True
+    if crossed_quadrant:
+        # Warp-in: zoom the ship arriving at the new quadrant
+        play_warp_in(screen, clock, lay, state, messages,
+                     travel_angle, fps=FPS)
+        _ship_current_angle = travel_angle
+        _ship_target_angle = travel_angle
+        _lock_heading(30)
+    else:
+        # In-sector: find ShipMoved events and animate them
+        moved = False
+        for ev in events:
+            if isinstance(ev, ShipMoved):
+                fr, fc = ev.from_sector
+                tr, tc = ev.to_sector
+                play_ship_move(screen, clock, lay, state, messages,
+                               fr, fc, tr, tc, fps=FPS)
+                moved = True
 
-    # Explicitly set both angles to travel direction and lock heading
-    if moved:
-        # Recalculate move angle to be safe (play_ship_move sets it too)
-        dx = state.sec_col - old_col
-        dy = old_row - state.sec_row
-        if dx != 0 or dy != 0:
-            move_angle = math.degrees(math.atan2(dy, dx)) % 360
-            _ship_current_angle = move_angle
-            _ship_target_angle = move_angle
-        _lock_heading(30)  # ~1s at 30fps before rotating to enemy
+        if moved:
+            dx = state.sec_col - old_col
+            dy = old_row - state.sec_row
+            if dx != 0 or dy != 0:
+                move_angle = math.degrees(math.atan2(dy, dx)) % 360
+                _ship_current_angle = move_angle
+                _ship_target_angle = move_angle
+            _lock_heading(30)
 
     return events
 
