@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+save/
+sst3_save.json

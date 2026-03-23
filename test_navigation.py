@@ -165,10 +165,19 @@ class TestDamageTick:
         for seed in range(200):
             random.seed(seed)
             s = GameState(); evs = []
-            _damage_tick(s, 1.0, evs)
+            _damage_tick(s, 1.0, evs, random_event=True)
             if find(evs, DeviceDamaged) or find(evs, DeviceImproved):
                 hits += 1
         assert 10 < hits < 190  # ~20% expected, never 0% or 100%
+
+    def test_no_random_damage_without_flag(self):
+        """In-sector navigation should never produce random damage."""
+        for seed in range(200):
+            random.seed(seed)
+            s = GameState(); evs = []
+            _damage_tick(s, 1.0, evs)  # random_event defaults to False
+            assert not find(evs, DeviceDamaged)
+            assert not find(evs, DeviceImproved)
 
     def test_fractional_warp_repairs_proportionally(self):
         s = GameState(); s.damage[2] = -3.0
